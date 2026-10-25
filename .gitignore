@@ -4,3 +4,6 @@ build/
 
 # Editor
 .vscode/
+
+# Windows download metadata
+*:Zone.Identifier
