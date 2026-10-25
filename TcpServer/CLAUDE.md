@@ -23,7 +23,7 @@ ML Research ではなく **ML Systems** が狙い。
 9. Phase 9: Kubernetes / Distributed Inference
 
 ## 現在の進捗
-**Phase 5 完了**(2026-10-14 時点)。次は Phase 6(C++ Server の Task Processing を ML Inference に置き換える)。
+**Phase 6 完了**(2026-10-25 時点。M1〜M4: 推論サーバー → 切り分け → 重いモデル測定 → dynamic batching)。次は Phase 7(TensorRT / GPU 最適化)。
 関連フォルダ(ホーム直下): `../TcpServer`, `../CudaLearn`, `../OnnxLearn`。
 
 ## 進め方のルール

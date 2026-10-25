@@ -132,6 +132,13 @@ static void run_inference(Ort::Session& session, const uint8_t* px, uint8_t* res
     std::memcpy(resp + sizeof(pred), logits, 10 * sizeof(float));    // 続く40B: logits
 }
 
+// ===== Phase 6 M4: dynamic batching =====
+// 同じ worker の「今 epoll で起きた複数の接続」のリクエストを、1回の Run() にまとめる。
+//   待ち時間は足さない(タイマーで待たない)。すでに届いている分だけをまとめる=日和見バッチ。
+//   → バッチが大きくなるのは負荷が高いときだけで、低負荷時の遅延は増えない。
+// 統計用(バッチ回数)。atomic の理由は g_requests と同じ
+std::atomic<uint64_t> g_batches{0};
+
 // 接続を片付ける。順番が大事:
 //   1) epoll の監視リストから外す  2) 自分の管理表(conns)から消す  3) fd を閉じる
 // ※ conns.erase すると、その Conn への参照(Conn& c)は無効になる。
@@ -142,17 +149,63 @@ static void close_conn(Worker& w, std::unordered_map<int, Conn>& conns, int fd) 
     close(fd);
 }
 
+// 受信が揃った接続 fd(ready[0..b))を、バッチ b 件として1回の Run() で処理して返信する
+//   input shape = (b,1,28,28)、output shape = (b,10)。モデルのバッチ軸が可変である必要がある。
+//   送信に失敗した fd(閉じるべき接続)は fails に積む。ここで close しないのは、呼び出し側が
+//   ready を回している最中に conns を壊さないため。
+static void run_batch(Ort::Session& session, std::unordered_map<int, Conn>& conns,
+                      const int* ready, size_t b, std::vector<int>& fails) {
+    static const char* in_names[]  = {"input"};
+    static const char* out_names[] = {"output"};
+    thread_local Ort::MemoryInfo mem =
+        Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    thread_local std::vector<float> input;   // 毎回 new しないよう使い回す(ワーカー専用)
+    input.resize(b * kReqBytes);
+
+    // 前処理: b 枚を縦に並べて1つのテンソルにする(batch 軸 = 先頭)
+    for (size_t i = 0; i < b; ++i) {
+        const uint8_t* px = conns.at(ready[i]).buf;
+        float* dst = input.data() + i * kReqBytes;
+        for (size_t j = 0; j < kReqBytes; ++j) dst[j] = px[j] / 255.0f * 2.0f - 1.0f;
+    }
+    int64_t shape[4] = {(int64_t)b, 1, 28, 28};
+    Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), shape, 4);
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto outs = session.Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 1);
+    auto t1 = std::chrono::steady_clock::now();
+    g_infer_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    g_requests += b;
+    ++g_batches;
+
+    // 後処理: 出力は (b,10) が連続して並ぶ。i 番目の接続には i 行目を返す
+    const float* all = outs[0].GetTensorData<float>();
+    for (size_t i = 0; i < b; ++i) {
+        const float* logits = all + i * 10;
+        uint8_t resp[kRespBytes];
+        int32_t pred = std::max_element(logits, logits + 10) - logits;
+        std::memcpy(resp, &pred, sizeof(pred));
+        std::memcpy(resp + sizeof(pred), logits, 10 * sizeof(float));
+        int fd = ready[i];
+        if (send(fd, resp, kRespBytes, MSG_NOSIGNAL) != (ssize_t)kRespBytes) fails.push_back(fd);
+        conns.at(fd).filled = 0;   // 次のリクエストのために空に戻す
+    }
+}
+
 // ── ワーカーの動作 ────────────────────────────────────────────
 // epoll_wait が起きる契機は2種類(M7と同じ):
 //   (a) event_fd が読める      → acceptor が新接続を預けた合図
 //   (b) クライアント fd が読める → データ到着 or 切断
 // M7との違い: (b) で「溜める→784B揃ったら推論→返信」をする。そのために conns(状態表)を持つ。
-static void worker_loop(Worker& w, Ort::Session& session) {
+static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch) {
     // このワーカーが担当する接続の状態表(キー = fd)。
     // ローカル変数なので他スレッドは触れない → ロック不要(sharding の利点)
     std::unordered_map<int, Conn> conns;
     epoll_event events[64];
+    std::vector<int> ready;   // この epoll_wait の回で「784B揃った」接続(バッチの材料)
+    std::vector<int> fails;
     while (!g_stop) {
+        ready.clear();
         // 登録した fd のどれかに用事ができるまで寝る(CPUを使わない)。-1 = 無期限
         int n = epoll_wait(w.epoll_fd, events, 64, -1);
         if (n <= 0) continue;   // シグナル割り込み(EINTR)などは単に回り直す
@@ -207,42 +260,46 @@ static void worker_loop(Worker& w, Ort::Session& session) {
             //  ・EAGAINで止まれる理由: set_nonblocking 済みだから。ブロッキングfdだと、空の
             //    recvで眠り、この worker が担当する全接続が止まってしまう。
             bool closed = false;    // ループ内で close_conn すると c が無効になるので、フラグで外に出す
-            while (true) {
+            // M4: 1接続につき 1リクエスト分(784B)揃った時点で読むのをやめ、推論は後でまとめて行う。
+            //   読み残しがあっても epoll は既定でレベルトリガなので、次の epoll_wait が再通知する。
+            //   (M3以前は揃うたびにその場で推論していた)
+            while (c.filled < kReqBytes) {
                 // 書き込み先 = buf の「埋まっている所の次」。読む量 = 「残り」だけ。
                 //  → 前回の続きから書き、784B を超えて次のリクエストの先頭を食べない。
                 ssize_t r = recv(fd, c.buf + c.filled, kReqBytes - c.filled, 0);
-                if (r > 0) {
-                    c.filled += r;                     // 読めた分だけ「埋まり」を進める
-                    if (c.filled == kReqBytes) {       // ちょうど1リクエスト分が揃った
-                        uint8_t resp[kRespBytes];
-                        run_inference(session, c.buf, resp);
-                        // 44Bは送信バッファに必ず入る前提(同期クライアントなので溜まらない)
-                        // MSG_NOSIGNAL: 相手が切れていても SIGPIPE で自分が死なないようにする
-                        if (send(fd, resp, kRespBytes, MSG_NOSIGNAL) != (ssize_t)kRespBytes) {
-                            closed = true; break;      // 全部送れなかった = 異常とみなして閉じる
-                        }
-                        c.filled = 0;   // 次のリクエストのために空に戻す(ここで0に戻すので、
-                                        // 長さ0の recv=「切断」と誤認する事態が起きない)
-                    }
-                } else if (r == 0) { closed = true; break; }                // 相手がclose
+                if (r > 0) c.filled += r;                                   // 読めた分だけ「埋まり」を進める
+                else if (r == 0) { closed = true; break; }                  // 相手がclose
                 else if (errno == EAGAIN || errno == EWOULDBLOCK) break;   // 今は空
                 else if (errno == EINTR) continue;                         // シグナルで中断 → やり直し
                 else { closed = true; break; }                             // それ以外はエラー
             }
             if (closed) close_conn(w, conns, fd);   // ループの外で片付ける(c はもう使わない)
+            else if (c.filled == kReqBytes) ready.push_back(fd);   // 推論待ちの列に並べる
         }
+
+        // ---- M4: この回に溜まった分を max_batch 件ずつまとめて推論 → 返信 ----
+        // max_batch=1 なら 1件ずつ(M3までと同じ動き)。ready の順に先頭から切り出す
+        fails.clear();
+        for (size_t off = 0; off < ready.size(); off += max_batch) {
+            size_t b = std::min(max_batch, ready.size() - off);
+            run_batch(session, conns, ready.data() + off, b, fails);
+        }
+        for (int fd : fails) close_conn(w, conns, fd);   // 送信失敗した接続は最後にまとめて閉じる
     }
 }
 
 int main(int argc, char** argv) {
     // ===== 引数 =====
-    if (argc < 2) { std::cerr << "usage: " << argv[0] << " <model.onnx> [workers] [intra_op_threads] [per_worker_session=0|1]\n"; return 1; }
+    if (argc < 2) { std::cerr << "usage: " << argv[0] << " <model.onnx> [workers] [intra_op_threads] [per_worker_session=0|1] [max_batch=1]\n"; return 1; }
     const char* model_path = argv[1];
     int kWorkers = (argc > 2) ? std::atoi(argv[2]) : 8;   // ワーカースレッド数(並列に捌く本数)
     int intra    = (argc > 3) ? std::atoi(argv[3]) : 1;   // ORT 1回の Run() 内部で使うスレッド数
     // 実験用: 1 なら worker ごとに専用の Session を作る(重みは worker 数ぶんのコピーになる)。
     // 0(既定)なら全 worker で1個を共有。共有による競合が Run() を遅くしているかを切り分けるためのもの
     int per_worker = (argc > 4) ? std::atoi(argv[4]) : 0;
+    // M4: 1回の Run() にまとめる最大件数。1(既定)ならバッチ化なし。
+    // 2以上にはバッチ軸が可変のモデル(mlp_dyn.onnx)が必要(固定 batch=1 のモデルだと Run() が失敗する)
+    size_t max_batch = (argc > 5) ? (size_t)std::max(1, std::atoi(argv[5])) : 1;
 
     // ===== シグナル =====
     // 相手が切れたソケットに send すると既定では SIGPIPE でプロセスごと死ぬ → 無視にする
@@ -314,7 +371,7 @@ int main(int argc, char** argv) {
         // std::ref: スレッドへの引数は既定でコピーされる。Worker も Session もコピー不可/したくないので
         // 「参照で渡せ」の目印(M3の FdQueue と同じ)。session は全ワーカーが同じ1個を指す。
         Ort::Session& s = per_worker ? *own_sessions[i] : session;   // 共有 or 専用
-        threads.emplace_back(worker_loop, std::ref(*workers[i]), std::ref(s));
+        threads.emplace_back(worker_loop, std::ref(*workers[i]), std::ref(s), max_batch);
     }
 
     // ===== メイン = acceptor(listen_fd だけを epoll で監視) =====
@@ -327,7 +384,8 @@ int main(int argc, char** argv) {
     // endl = 改行 + flush。起動完了をすぐ表示させる
     std::cout << "infer_server: port 8080, model=" << model_path
               << ", workers=" << kWorkers << ", intra_op_threads=" << intra
-              << ", session=" << (per_worker ? "per-worker" : "shared") << std::endl;
+              << ", session=" << (per_worker ? "per-worker" : "shared")
+              << ", max_batch=" << max_batch << std::endl;
 
     int next = 0;   // ラウンドロビン用: 次に渡すワーカーの番号
     while (!g_stop) {
@@ -353,9 +411,12 @@ int main(int argc, char** argv) {
 
     // 停止時に統計を出す: ORT Run() の平均時間 = 「サーバー内の推論コスト」
     // これと クライアントから見た往復時間(p50等)を比べると、推論が全体の何割かが分かる
-    uint64_t n = g_requests.load();
+    // M4: Run() は「バッチ1回」ごとの時間。リクエスト1件あたりに直すと Run()/avg_batch
+    uint64_t n = g_requests.load(), nb = g_batches.load();
     std::cout << "requests=" << n << "  avg ORT Run()="
-              << (n ? g_infer_ns.load() / n / 1000.0 : 0.0) << " us" << std::endl;
+              << (nb ? g_infer_ns.load() / nb / 1000.0 : 0.0) << " us"
+              << "  batches=" << nb << "  avg_batch=" << (nb ? (double)n / nb : 0.0)
+              << "  Run()/request=" << (n ? g_infer_ns.load() / n / 1000.0 : 0.0) << " us" << std::endl;
     // ワーカーは epoll_wait(-1) で寝ているので join できない。_exit で強制終了する。
     // ※ _exit は iostream のバッファを flush しない。上の endl はそのために必要(前回のバグの原因)
     _exit(0);

@@ -112,16 +112,28 @@ int main(int argc, char** argv) {
     std::string dir = (argc > 3) ? argv[3] : "../OnnxLearn/data/MNIST/raw";
 
     // ===== MNIST テストデータを全部メモリに読む(計測中にファイルI/Oを混ぜないため) =====
-    std::ifstream fi(dir + "/t10k-images-idx3-ubyte", std::ios::binary);
-    std::ifstream fl(dir + "/t10k-labels-idx1-ubyte", std::ios::binary);
-    if (!fi || !fl) { std::cerr << "cannot open MNIST in " << dir << "\n"; return 1; }
-    // 画像ファイルのヘッダ: magic, 枚数, 行数, 列数 の順(各4B)。枚数だけ使い、残りは読み飛ばす
-    be32(fi); uint32_t n = be32(fi); be32(fi); be32(fi);
-    // ラベルファイルのヘッダ: magic, 枚数(各4B)。どちらも読み飛ばす
-    be32(fl); be32(fl);
-    std::vector<uint8_t> imgs((size_t)n * kReqBytes), lbls(n);
-    fi.read((char*)imgs.data(), imgs.size());
-    fl.read((char*)lbls.data(), lbls.size());
+    // dir == "dummy": MNIST なしで乱数画像を使う(重いモデルのレイテンシ測定用。正解率は無意味)
+    const bool dummy = (dir == "dummy");
+    std::vector<uint8_t> imgs, lbls;
+    if (dummy) {
+        const uint32_t n = 10000;
+        imgs.resize((size_t)n * kReqBytes);
+        lbls.assign(n, 255);   // 255 はどの予測(0〜9)とも一致しない
+        uint32_t x = 12345;    // 固定シードの簡易乱数(測定ごとに入力を変えない)
+        for (auto& b : imgs) { x = x * 1664525u + 1013904223u; b = x >> 24; }
+    } else {
+        std::ifstream fi(dir + "/t10k-images-idx3-ubyte", std::ios::binary);
+        std::ifstream fl(dir + "/t10k-labels-idx1-ubyte", std::ios::binary);
+        if (!fi || !fl) { std::cerr << "cannot open MNIST in " << dir << "\n"; return 1; }
+        // 画像ファイルのヘッダ: magic, 枚数, 行数, 列数 の順(各4B)。枚数だけ使い、残りは読み飛ばす
+        be32(fi); uint32_t n = be32(fi); be32(fi); be32(fi);
+        // ラベルファイルのヘッダ: magic, 枚数(各4B)。どちらも読み飛ばす
+        be32(fl); be32(fl);
+        imgs.resize((size_t)n * kReqBytes);
+        lbls.resize(n);
+        fi.read((char*)imgs.data(), imgs.size());
+        fl.read((char*)lbls.data(), lbls.size());
+    }
 
     // ===== 接続数ぶんのスレッドを起動し、全員が同じ deadline まで走る =====
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(secs);
@@ -150,6 +162,7 @@ int main(int argc, char** argv) {
               << "  p99=" << percentile(all, 99)
               << "  max=" << (all.empty() ? 0 : all.back()) << "\n";
     // 正解率が極端に低い(例: 10%前後)なら、速くなったのではなく壊れている
-    std::cout << "accuracy: " << g_correct.load() << "/" << total << " = "
-              << (total ? 100.0 * g_correct.load() / total : 0.0) << "%\n";
+    if (dummy) std::cout << "accuracy: n/a (dummy input)\n";
+    else std::cout << "accuracy: " << g_correct.load() << "/" << total << " = "
+                   << (total ? 100.0 * g_correct.load() / total : 0.0) << "%\n";
 }
