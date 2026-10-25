@@ -1,0 +1,6 @@
+# Build artifacts
+build/
+*.log
+
+# Editor
+.vscode/
