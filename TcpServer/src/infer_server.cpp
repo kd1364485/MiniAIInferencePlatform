@@ -6,10 +6,18 @@
 //   response: int32 pred + float32 x 10 (logits)  = 44 bytes
 //
 // 使い方: ./infer_server <model.onnx> [workers=8] [intra_op_threads=1] [per_worker_session=0]
-//                        [max_batch=1] [infer_threads=0]
+//                        [max_batch=1] [infer_threads=0] [provider=cpu]
 //   workers       : I/O worker の本数(epoll で受信・返信する)。infer_threads=0 ならこの worker が推論もする
 //   infer_threads : 0 = インライン(I/O worker が自分で Run() する。従来動作)
 //                   1以上 = 推論専用 worker をこの本数だけ作り、共有 Request Queue 経由で推論する
+//   provider      : 推論を実行する場所(Phase 7 M3)
+//                   cpu      = CPU(既定。従来動作)
+//                   cuda     = ORT の CUDA プロバイダ(厳密な FP32: use_tf32=0)
+//                   trt      = ORT の TensorRT プロバイダ(FP32 指定。TF32 が効く可能性: 出力誤差で判断)
+//                   trt-fp16 = 同 FP16
+//                   GPU 系は GPU 版の ONNX Runtime パッケージ(-DORT_DIR=…/ort_gpu)でビルドし、
+//                   tools/run_gpu_env.sh 経由で起動する(CUDA 13 / cuDNN / TensorRT のライブラリの場所が要る)。
+//                   失敗(ライブラリが無い等)は起動時に Ort::Exception で止まる = 黙って CPU に落ちない。
 //
 // 設計メモ:
 //  - Ort::Session は Run() がスレッドセーフ → 全ワーカーで1個を共有(モデルの重みを1コピーに保つ)
@@ -55,10 +63,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -475,11 +485,53 @@ static void infer_loop(Ort::Session& session, size_t max_batch,
     }
 }
 
-int main(int argc, char** argv) {
+// 推論プロバイダを SessionOptions に設定する(Phase 7 M3)。
+//   cuda: 厳密な FP32 にするため TF32 を切る(PyTorch の FP32 と同じ条件。M1 と同じ理由)
+//   trt : TensorRT。バッチ 1〜max_batch を1つのエンジンで受ける最適化プロファイルを指定する
+//         (エンジンの作成は初回に数秒〜数十秒かかるので、ファイルにキャッシュして2回目以降を速くする)
+//         TensorRT で未対応の演算が万一あっても動くよう、CUDA プロバイダを次候補に足す
+static void configure_provider(Ort::SessionOptions& so, const std::string& provider,
+                               size_t max_batch, const std::string& model_path) {
+    if (provider == "cpu") return;
+
+    if (provider == "cuda") {
+        Ort::CUDAProviderOptions cuda;
+        cuda.Update({{"use_tf32", "0"}});
+        so.AppendExecutionProvider_CUDA_V2(*cuda);   // Base<T> の operator* で生のオプション構造体を渡す
+        std::cout << "CUDA options: " << cuda.GetCUDAProviderOptionsAsString() << std::endl;
+        return;
+    }
+
+    if (provider == "trt" || provider == "trt-fp16") {
+        const bool fp16 = (provider == "trt-fp16");
+        // 設定(精度・バッチ上限)ごとに別のキャッシュ置き場にする。違う設定のエンジンを使い回さないため
+        std::string cache = "trt_cache/" + std::filesystem::path(model_path).stem().string() +
+                            (fp16 ? "_fp16" : "_fp32") + "_b" + std::to_string(max_batch);
+        std::filesystem::create_directories(cache);
+        const std::string max_shape = "input:" + std::to_string(max_batch) + "x1x28x28";
+        Ort::TensorRTProviderOptions trt;
+        trt.Update({{"trt_fp16_enable", fp16 ? "1" : "0"},
+                    {"trt_engine_cache_enable", "1"},
+                    {"trt_engine_cache_path", cache},
+                    {"trt_profile_min_shapes", "input:1x1x28x28"},
+                    {"trt_profile_opt_shapes", max_shape},   // 最適化の狙いは「一番混んでいるとき」= max_batch
+                    {"trt_profile_max_shapes", max_shape}});
+        so.AppendExecutionProvider_TensorRT_V2(*trt);
+        Ort::CUDAProviderOptions cuda;
+        cuda.Update({{"use_tf32", "0"}});
+        so.AppendExecutionProvider_CUDA_V2(*cuda);
+        std::cout << "TensorRT options: " << trt.GetTensorRTProviderOptionsAsString() << std::endl;
+        return;
+    }
+    throw std::runtime_error("unknown provider: " + provider + " (cpu | cuda | trt | trt-fp16)");
+}
+
+static int server_main(int argc, char** argv) {
     // ===== 引数 =====
     if (argc < 2) {
         std::cerr << "usage: " << argv[0]
-                  << " <model.onnx> [workers] [intra_op_threads] [per_worker_session=0|1] [max_batch=1] [infer_threads=0]\n";
+                  << " <model.onnx> [workers] [intra_op_threads] [per_worker_session=0|1] [max_batch=1] [infer_threads=0]"
+                     " [provider=cpu|cuda|trt|trt-fp16]\n";
         return 1;
     }
     const char* model_path = argv[1];
@@ -494,6 +546,8 @@ int main(int argc, char** argv) {
     // M5: 推論専用 worker の本数。0(既定)ならインライン。1以上なら共有 Request Queue 経由で推論する
     int infer_threads = (argc > 6) ? std::max(0, std::atoi(argv[6])) : 0;
     bool use_queue = infer_threads > 0;
+    // M3: 推論を実行する場所。cpu(既定) / cuda / trt / trt-fp16
+    std::string provider = (argc > 7) ? argv[7] : "cpu";
     if (use_queue && per_worker) {
         std::cerr << "note: キュー版では Session は共有のみ(per_worker_session は無視)\n";
         per_worker = 0;
@@ -516,14 +570,24 @@ int main(int argc, char** argv) {
     so.SetIntraOpNumThreads(intra);
     // グラフ最適化(演算の融合など)を最大にする。モデル読み込み時に1回だけ行う
     so.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    configure_provider(so, provider, max_batch, model_path);   // cpu 以外なら GPU のプロバイダを足す
     // モデルファイルを読み込み、重みをメモリに載せる。ここは起動時の1回だけ(リクエストごとではない)
     Ort::Session session(env, model_path, so);
 
     // ウォームアップ: 初回Runは遅延初期化(メモリ確保等)を含むので測定に混ぜない
     // (Phase 4 M5 の「初回157ms=JITコンパイル混入」と同じ種類の落とし穴)
     {
-        uint8_t zero[kReqBytes] = {}, resp[kRespBytes];
-        for (int i = 0; i < 20; ++i) run_inference(session, zero, resp);
+        // GPU は初回に遅延初期化(TensorRT はエンジン作成)が入る。そのため batch=1 と max_batch の
+        // 両方で空打ちしてから受け付ける。TensorRT の初回は数秒〜数十秒かかることがある
+        std::cout << "warming up (provider=" << provider << ", max_batch=" << max_batch << ")..." << std::endl;
+        std::vector<uint8_t> zeros(max_batch * kReqBytes, 0);
+        std::vector<const uint8_t*> px(max_batch);
+        for (size_t i = 0; i < max_batch; ++i) px[i] = zeros.data() + i * kReqBytes;
+        std::vector<float> out;
+        for (size_t b : {size_t(1), max_batch}) {
+            for (int i = 0; i < 20; ++i) forward_batch(session, px.data(), b, out);
+            if (max_batch == 1) break;   // 1回だけで足りる
+        }
         g_requests = 0; g_infer_ns = 0; g_batches = 0;   // ウォームアップ分の統計は捨てる
     }
 
@@ -591,6 +655,7 @@ int main(int argc, char** argv) {
               << ", workers=" << kWorkers << ", intra_op_threads=" << intra
               << ", session=" << (per_worker ? "per-worker" : "shared")
               << ", max_batch=" << max_batch
+              << ", provider=" << provider
               << ", infer_threads=" << infer_threads << (use_queue ? " (queue)" : " (inline)") << std::endl;
 
     int next = 0;   // ラウンドロビン用: 次に渡すワーカーの番号
@@ -634,4 +699,16 @@ int main(int argc, char** argv) {
     // ワーカーは epoll_wait(-1) / cv.wait で寝ているので join できない。_exit で強制終了する。
     // ※ _exit は iostream のバッファを flush しない。上の endl はそのために必要(前回のバグの原因)
     _exit(0);
+}
+
+// 起動時の失敗(GPU のライブラリが無い、モデルが読めない等)を、原因が分かる形で報告して終了する
+int main(int argc, char** argv) {
+    try {
+        return server_main(argc, argv);
+    } catch (const Ort::Exception& e) {
+        std::cerr << "ONNX Runtime のエラー: " << e.what() << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "エラー: " << e.what() << std::endl;
+    }
+    return 1;
 }
