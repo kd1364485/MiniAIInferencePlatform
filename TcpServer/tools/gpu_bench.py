@@ -141,12 +141,84 @@ def make_torch_cuda():
     return build
 
 
+def make_trt(fp16):
+    """ネイティブの TensorRT: ONNX からエンジンを作り、直接動かす(M2)。
+    エンジンは「バッチ 1〜256 の1つの最適化プロファイル」で作る(最適化は batch=128 を狙う)。
+    FP32 は厳密にするため TF32 を外す(TensorRT は Ampere で TF32 が既定で有効)。
+    入出力は他の backend と同じく「CPU 配列を渡して CPU 配列で受け取る」(転送を含める)。"""
+    def build():
+        import tensorrt as trt
+        logger = trt.Logger(trt.Logger.WARNING)
+        builder = trt.Builder(logger)
+        network = builder.create_network()           # TensorRT 10 は明示バッチが既定
+        parser = trt.OnnxParser(network, logger)
+        if not parser.parse_from_file(os.path.abspath(MODEL)):   # 外部の重みファイル(.data)も読める
+            sys.exit("ONNX の解析に失敗: " + "; ".join(str(parser.get_error(i)) for i in range(parser.num_errors)))
+        config = builder.create_builder_config()
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 512 << 20)
+        if fp16:
+            config.set_flag(trt.BuilderFlag.FP16)
+        else:
+            config.clear_flag(trt.BuilderFlag.TF32)
+        profile = builder.create_optimization_profile()
+        profile.set_shape("input", (1, 1, 28, 28), (128, 1, 28, 28), (256, 1, 28, 28))   # min / opt / max
+        config.add_optimization_profile(profile)
+        t0 = time.time()
+        blob = builder.build_serialized_network(network, config)
+        if blob is None:
+            sys.exit("エンジンの作成に失敗")
+        print(f"  [trt] エンジン作成 {time.time() - t0:.1f}s fp16={fp16}", file=sys.stderr)
+        engine = trt.Runtime(logger).deserialize_cuda_engine(blob)
+        context = engine.create_execution_context()
+        bufs = {}
+        current = [None]                              # いま context に設定してある batch
+
+        def run(x):
+            b = x.shape[0]
+            if b not in bufs:                         # batch ごとに GPU 側の入出力バッファを1回だけ確保
+                bufs[b] = (torch.empty((b, 1, 28, 28), dtype=torch.float32, device="cuda"),
+                           torch.empty((b, 10), dtype=torch.float32, device="cuda"))
+            xin, yout = bufs[b]
+            if current[0] != b:                       # 形とアドレスは batch が変わったときだけ設定する
+                context.set_input_shape("input", (b, 1, 28, 28))   # (毎回呼ぶと Python の手間が増えて不公平)
+                context.set_tensor_address("input", xin.data_ptr())
+                context.set_tensor_address("output", yout.data_ptr())
+                current[0] = b
+            xin.copy_(torch.from_numpy(x))            # CPU → GPU
+            context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
+            return yout.cpu().numpy()                 # GPU → CPU(ここで同期も済む)
+        return run, (engine, context, bufs)
+    return build
+
+
+def make_ort_trt(fp16):
+    """ORT の TensorRT 連携(M3 の C++ サーバーが使う経路)。プロファイルでバッチ 1〜256 を1つのエンジンで受ける。
+    ORT の TensorRT 連携には TF32 を切る公開オプションが見当たらない(未確認)ので、
+    「対torch差」が 5e-5 前後なら TF32 が効いている、と読む。"""
+    opts = {
+        "trt_fp16_enable": fp16,
+        "trt_profile_min_shapes": "input:1x1x28x28",
+        "trt_profile_opt_shapes": "input:128x1x28x28",
+        "trt_profile_max_shapes": "input:256x1x28x28",
+    }
+    return make_ort([("TensorrtExecutionProvider", opts), "CUDAExecutionProvider"], "TensorrtExecutionProvider")
+
+
 BACKENDS = [
     ("pytorch-cuda",   make_torch_cuda(), True),
     ("ort-cuda",       make_ort([("CUDAExecutionProvider", {"use_tf32": "0"})], "CUDAExecutionProvider"), True),
     ("ort-cuda-tf32",  make_ort([("CUDAExecutionProvider", {"use_tf32": "1"})], "CUDAExecutionProvider"), True),
     ("ort-cpu",        make_ort(["CPUExecutionProvider"], "CPUExecutionProvider"), False),
+    # ---- M2: TensorRT ----
+    ("trt-fp32",       make_trt(False), True),
+    ("trt-fp16",       make_trt(True), True),
+    ("ort-trt-fp32",   make_ort_trt(False), True),
+    ("ort-trt-fp16",   make_ort_trt(True), True),
 ]
+# 開発中に一部だけ測りたいとき:  GPU_BENCH_ONLY=trt-fp32,trt-fp16 python tools/gpu_bench.py
+_only = os.environ.get("GPU_BENCH_ONLY")
+if _only:
+    BACKENDS = [b for b in BACKENDS if b[0] in _only.split(",")]
 
 
 def pct(sorted_us, p):
