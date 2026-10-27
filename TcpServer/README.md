@@ -858,3 +858,59 @@ Phase 2 の C++ サーバー（acceptor + epoll ワーカー）の echo 部分�
 
 ### つまずき
 - 50接続・3秒のベンチで正解率が92.7%に出て、誤送信を疑った → 荒い試験をしないインライン版でも同じ値。bench の画像の選び方による見かけの差だった
+
+
+Phase 7 TensorRT / GPU 最適化 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## 2026/10/27　M1（GPU 比較基盤: PyTorch / ORT CUDA / ORT CPU）===============================
+
+### 環境
+- GPU: NVIDIA GeForce RTX 3060 Laptop GPU（VRAM 6GB、ハイブリッド GPU のノート PC）。ドライバ 596.36（CUDA 13.2 対応）。
+  WSL2 では NVIDIA の GPU だけが `/dev/dxg` 経由で見える（Intel 内蔵 GPU は使われない）
+- 入れたもの: ONNX Runtime 1.30.0 の GPU 版 C++ パッケージ `onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz`（SHA-256 を公式の値と照合）を
+  `OnnxLearn/ort_gpu` に展開（CUDA と TensorRT の両プロバイダ同梱）。Python に `tensorrt-cu13==10.16.1.11`
+  （ORT の TensorRT プロバイダが `libnvinfer.so.10` を要求するので 10 系）。既存の torch / onnxruntime-gpu などは変わらない
+- ライブラリの検索パス: `nvidia/cu13/lib`, `nvidia/cudnn/lib`, `tensorrt_libs`, `/usr/lib/wsl/lib` を `LD_LIBRARY_PATH` に足す
+  （`tools/gpu_bench.py` は自動で足して再実行する）
+- 注意: ORT の `get_providers()` には CPU が常に末尾に付く。GPU が使われているかは先頭の要素と、GPU 使用率で確認する
+
+### やったこと
+`tools/gpu_bench.py`: 同じ MLP（mlp_dyn、784→2048→2048→10）を、backend ごとに別プロセスで測る。
+「CPU 配列を渡して CPU 配列で受け取る」まで含めた 1 回の呼び出し時間（p50/p95/p99）、samples/s、VRAM、GPU 使用率、SM クロック。
+公平にするために: ORT の CUDA は既定で TF32 が有効なので、厳密な FP32（use_tf32=0）を基準にし、TF32 は別行で示した
+
+### 測定結果（この PC、各条件 2 秒、単一ストリームの繰り返し）
+p50 (us) と samples/s:
+| batch | PyTorch CUDA | ORT CUDA (FP32) | ORT CUDA (TF32) | ORT CPU |
+|---|---|---|---|---|
+| 1   | 232 / 3,906   | 208 / 4,480   | 212 / 4,337   | **189 / 4,794** |
+| 8   | 284 / 25,820  | 242 / 30,084  | 254 / 28,631  | 446 / 16,946 |
+| 32  | 320 / 91,436  | 305 / 97,154  | 293 / 101,869 | 1,526 / 20,813 |
+| 128 | 482 / 239,353 | 473 / 260,130 | 382 / 311,286 | 5,498 / 23,439 |
+| 256 | 790 / 308,174 | 797 / 307,673 | 771 / 320,474 | 10,942 / 22,909 |
+
+その他（ORT CUDA FP32、他もほぼ同じ）: VRAM +163〜171MiB（CUDA コンテキスト込み）、GPU 使用率 44〜77%（待機時 4〜26% を含む）、
+SM クロック 1,660〜1,990MHz（待機時は 210〜410MHz）。PyTorch(CPU) との出力の最大差: FP32 は 5e-8、TF32 は 5e-5
+
+### 分かったこと（事実）
+- batch=1 では CPU が最速（189us、GPU は 208〜232us）。GPU の latency は batch 1〜8 でほぼ平らで 210〜290us。
+  計算が軽くても固定費（起動・CPU↔GPU の転送・呼び出しの手間）が約 200us かかる。Phase 4/5 の「固定費が支配的」と同じ構造
+- batch が増えると GPU が圧勝: batch=32 で latency 約 5 倍、batch=256 で約 14 倍短く、samples/s は 22.9k → 308〜320k（約 14 倍）。
+  GPU の samples/s は batch 128〜256 で頭打ち（約 300〜320k）
+- PyTorch と ORT(CUDA, FP32) は大きくは変わらない。batch=1〜8 では ORT が約 7〜17% 速い（2 回の測定で同じ傾向）。batch=128 以上はほぼ同じ
+- TF32 の効果は限定的: batch=128 で +20%（260k → 311k）、他は +4〜5%、batch=1〜8 では差なし（起動が支配的）。代わりに誤差は 1000 倍（5e-8 → 5e-5）
+- GPU 使用率は batch=256 でも 70% 台。1 本のストリームを回すだけでは GPU を使い切れない（呼び出しの合間に遊ぶ）
+
+### 仮説（未検証）
+- ORT が小 batch で速い理由: PyTorch の Python 側の呼び出しの手間が大きい（未確認）
+- GPU の samples/s が頭打ちになる理由: 計算か転送のどちらかが支配（切り分けていない）
+
+### 注意（測定の限界）
+- 各条件 2 秒。2 回測って傾向は同じだが、数%の差は誤差の可能性。Windows 側のアプリも同じ GPU を使うので、使用率・VRAM は背景の揺れを含む
+- 測定は Python から。C++ サーバー経由の値ではない（M3 で測る）。モデルは乱数重みの MLP（精度は見ない）
+- 最初の測定では、同じプロセスで backend を順に測ったため、VRAM が PyTorch +170MiB・ORT +50MiB と見えた。
+  PyTorch が先に作った CUDA コンテキストが残り、後の ORT の分に含まれなかったため（別プロセスにして解消）
+
+### つまずき
+- `pip install --dry-run` でも、TensorRT のライブラリ（数GB）を丸ごと取得するので 10 分以上かかった
+  （PyPI の `tensorrt-cu13-libs` は小さなスタブで、本体は NVIDIA の配布元から取る方式）
