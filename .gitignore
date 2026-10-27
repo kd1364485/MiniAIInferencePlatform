@@ -2,6 +2,11 @@
 build/
 *.log
 
+# Generated models (tools/export_mlp.py で作る。大きいのでコミットしない)
+*.onnx
+*.onnx.data
+TcpServer/models/
+
 # Editor
 .vscode/
 
