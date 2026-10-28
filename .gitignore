@@ -12,3 +12,7 @@ TcpServer/models/
 
 # Windows download metadata
 *:Zone.Identifier
+
+# Python bytecode
+__pycache__/
+*.pyc
