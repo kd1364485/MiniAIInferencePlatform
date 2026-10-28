@@ -16,3 +16,6 @@ TcpServer/models/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# ORT のパッケージ(Docker ビルド用にホストで取っておく。大きいのでコミットしない)
+TcpServer/ort-cache/*.tgz

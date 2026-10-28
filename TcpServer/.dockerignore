@@ -1,0 +1,9 @@
+# docker build に送る「ビルドコンテキスト」から外すもの(送る量が減り、キャッシュも安定する)
+build
+models
+trt_cache
+tools
+versions
+*.log
+*.md
+.git
