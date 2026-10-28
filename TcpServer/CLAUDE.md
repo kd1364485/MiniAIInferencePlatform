@@ -23,8 +23,9 @@ ML Research ではなく **ML Systems** が狙い。
 9. Phase 9: Kubernetes / Distributed Inference
 
 ## 現在の進捗
-**Phase 6 完了**(2026-10-27 時点。M1〜M5: 推論サーバー → 切り分け → 重いモデル測定 → dynamic batching → Request Queue)。次は Phase 7(TensorRT / GPU 最適化)。
-Phase 6 に GPU は含めていない(Phase 7 で扱う)。未解決: サーバー内でだけ出る Run() の約 +70us の正体。
+**Phase 7 完了**(2026-10-28 時点。GPU は RTX 3060 Laptop 6GB。M1〜M4 + 総括: GPU 比較基盤 → TensorRT(FP16) → C++ サーバーに GPU(cuda/trt) → INT8)。次は Phase 8(Docker GPU / Monitoring / AI Infrastructure)。
+Phase 6 完了(2026-10-27。M1〜M5: 推論サーバー → 切り分け → 重いモデル測定 → dynamic batching → Request Queue)。
+未解決: サーバー内でだけ出る Run() の約 +70us・約 1ms の「残り」の正体、ORT 経由の TensorRT がネイティブより速かった理由。INT8 は C++ サーバー未対応。
 関連フォルダ: リポジトリ `~/seiya7183517/`(GitHub: `kd1364485/MiniAIInferencePlatform`)の `TcpServer/`。ホーム直下に `CudaLearn/`, `OnnxLearn/`。ビルド・実行手順は `TcpServer/README.md` の冒頭。
 
 ## 進め方のルール
