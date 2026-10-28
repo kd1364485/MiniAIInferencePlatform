@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(tcpserver VERSION 0.1 LANGUAGES CXX)
 
+# ビルドの種類の指定が無いと、CMake は最適化なし(-O0)でコンパイルする。性能を測るプロジェクトなので、
+# 指定が無ければ Release(-O3)にする。デバッグしたいときは -DCMAKE_BUILD_TYPE=Debug を渡す。
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

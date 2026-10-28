@@ -1147,3 +1147,39 @@ GPU のプロバイダ（cpu / cuda / trt / trt-fp16）を載せた。
 ### 次へ（Phase 8: Docker GPU / Monitoring / AI Infrastructure）
 - 今回測った GPU 使用率・VRAM・キュー待ち・バッチ数を、実行中のサーバーから常時見られるようにする（Monitoring）
 - GPU 版サーバーを Docker で動かす（NVIDIA Container Toolkit）。今回の `run_gpu_env.sh` が手で設定した、ライブラリの場所の問題がそのまま出る
+
+
+Phase 8 AI Infrastructure（Docker GPU / Monitoring）~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+## 2026/10/28　M1（Docker + NVIDIA Container Toolkit）===============================================
+
+### やったこと
+- WSL2 の Ubuntu に Docker Engine 29.9.2 と NVIDIA Container Toolkit を、公式の apt リポジトリから入れた（`tools/setup_docker_wsl.sh`。
+  中身を読んでから `sudo bash` で実行）。`nvidia-ctk runtime configure` が `/etc/docker/daemon.json` に `nvidia` ランタイムを登録する
+- 確認: `docker run --rm --gpus all ubuntu:24.04 nvidia-smi` で、コンテナの中に RTX 3060 Laptop GPU（ドライバ 596.36、CUDA 13.2、VRAM 6144MiB）が見えた。
+  ubuntu:24.04 のイメージに GPU ドライバは入っていない。Toolkit が、ホストのドライバのライブラリ（WSL2 では `/usr/lib/wsl/lib`）とデバイスを、コンテナ起動時に注入する
+
+### 学んだこと
+- NVIDIA Container Toolkit は「コンテナの起動時に、ホストの GPU ドライバのライブラリとデバイスをコンテナに注入する」仕組み。
+  イメージには CUDA のライブラリだけ入れればよく、ドライバはホストのものを使う。Phase 7 の `run_gpu_env.sh` が手で足していた「ライブラリの場所」の問題を、コンテナでは Toolkit が代わりに解決する
+- `docker` グループに入ると、事実上 root と同じ権限になる（ホストのファイルをコンテナにマウントして書き換えられる）
+- Docker Desktop（Windows 側）の `docker` が PATH にあるが、WSL に連携が無いと動かない。今回は Ubuntu 内に Engine を入れた
+
+### つまずき
+- グループの追加は、新しいログインから反映される。この会話のシェルは古いままで `permission denied` になり、`sg docker -c` で回避した
+- Git の設定が `core.fileMode=false` で、実行権限のビットが記録されていなかった。`run_gpu_env.sh` が別 PC でも実行不可になる状態だった
+  → `git update-index --chmod=+x` でインデックスに明示し、呼び出し側も `bash` 経由にして実行権限に頼らないようにした
+- `/tmp` は WSL の再起動で掃除される。作業用のビルド・キャッシュは `/tmp` に置かない（TensorRT のエンジンキャッシュは `~/.cache` にあり残った）
+
+### 測定の訂正（最適化なしのビルドで測っていた）
+`CMakeLists.txt` にビルドの種類の指定が無く、`cmake -S . -B dir -DORT_DIR=…` だけで作ったビルドは最適化なし（`-O0`）だった。
+Phase 6 M5 と Phase 7 M3 のサーバーの測定は、この最適化なしのビルドで行った（Phase 6 の初期の一部は `g++ -O2`）。
+同じソースを、最適化なしと Release（`-O3`）でビルドして、Phase 7 M3 の主要な条件（100 接続、mlp_dyn、各5秒1回）を測り直した:
+| 構成 | 最適化なし req/s | Release req/s | 差 |
+|---|---|---|---|
+| CPU インライン w8 b8 | 15,024 | 15,580 | +3.7% |
+| CPU キュー 推論6 b32 | 15,200 | 15,036 | -1% |
+| CUDA 推論1 b32 | 38,888 | 40,407 | +3.9% |
+| TRT-FP16 推論1 b128 | 42,745 | 47,606 | +11% |
+差は 0〜4%（TRT-FP16 のみ +11%）で、繰り返しのばらつき（5〜10%）と同程度。**Phase 6・7 の結論（順序、GPU が CPU の約 3 倍）は変わらない**。
+ただし数字は Release で測り直したものとは少し違う。再発防止に、`CMakeLists.txt` の既定を Release にした
