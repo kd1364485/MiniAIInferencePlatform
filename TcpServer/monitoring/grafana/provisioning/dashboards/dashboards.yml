@@ -1,0 +1,10 @@
+# ダッシュボードの置き場を Grafana に教える(provisioning)。JSON ファイルをこのフォルダに置くだけで読み込まれる。
+apiVersion: 1
+providers:
+  - name: infer-server
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false           # 画面での変更を保存させない(ファイルが正。変えるなら JSON を直して git に入れる)
+    updateIntervalSeconds: 10       # JSON が変わったら 10 秒ごとに読み直す
+    options:
+      path: /etc/grafana/dashboards

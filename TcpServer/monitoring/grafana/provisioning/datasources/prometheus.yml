@@ -1,0 +1,12 @@
+# Grafana の「データソース」をファイルで定義する(provisioning)。画面で手作業の設定をしなくて済み、再現できる。
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus                 # ダッシュボードの JSON から、この uid で参照する
+    type: prometheus
+    access: proxy                   # ブラウザではなく Grafana のサーバーが Prometheus に問い合わせる
+    url: http://prometheus:9090     # docker compose のサービス名
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s              # Prometheus の scrape_interval に合わせる(rate の最小の窓の目安)

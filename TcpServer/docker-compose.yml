@@ -1,0 +1,96 @@
+# Phase 8 M4: 推論サーバー + 監視(Prometheus / Grafana / GPU exporter)を 1 コマンドで起動する。
+#
+#   起動:  docker compose up -d --build          停止:  docker compose down
+#   画面:  Grafana  http://localhost:3000   (ユーザー admin、パスワードは .env の GRAFANA_ADMIN_PASSWORD。無ければ admin)
+#          Prometheus http://localhost:9090  (取得の状況は Status → Targets)
+#   負荷:  ホストから  build/infer_bench 100 60 dummy   (推論のポート 8080 に接続する。dummy は乱数画像)
+#
+# 構成(同じ Docker ネットワークの中。サービス名で互いを呼べる):
+#
+#   infer_bench(ホスト) ─8080→ [infer-server] ←9100/metrics─ [prometheus] ←─ [grafana]  (画面: 3000)
+#                                                    [gpu-exporter] ←9400/metrics─┘
+#
+# 外に公開するポートは、すべて 127.0.0.1(このマシンの中だけ)に限る。
+#   - 9100 / 9400(メトリクス)は認証が無いので、そもそも公開しない。Prometheus が Docker のネットワークの内側から取りに来る
+#   - 8080(推論)・9090・3000 も、127.0.0.1 だけ(LAN の他のマシンからは見えない)
+name: infer-platform
+
+services:
+  infer-server:
+    build: .                      # TcpServer/Dockerfile(2 段階ビルド)。ソースを変えたら --build で作り直される
+    image: infer-server:gpu
+    # 引数: <model> [workers] [intra_op] [per_worker] [max_batch] [infer_threads] [provider]
+    #   I/O worker 2 本 + 推論 1 本 + バッチ上限 32 + CUDA。Phase 7 M3 で GPU に最適だった形(推論スレッドは1本が最良)
+    command: ["/models/mlp_dyn.onnx", "2", "1", "0", "32", "1", "cuda"]
+    volumes:
+      - ./models:/models:ro       # モデルはイメージに入れず、読み取り専用でマウント(models/ は git 管理外。tools/export_mlp.py で作る)
+    ports:
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:                # NVIDIA Container Toolkit が、ホストの GPU ドライバのライブラリ等を注入する
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    healthcheck:                  # /healthz が 200 を返すか。bash の /dev/tcp で接続する(イメージに curl は入れていない)
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/9100 && printf "GET /healthz HTTP/1.0\r\n\r\n" >&3 && head -n1 <&3 | grep -q " 200 "']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 40s           # 起動直後のウォームアップ(CUDA の初期化)を待つ
+    restart: unless-stopped
+
+  gpu-exporter:
+    image: python:3.12.16-slim
+    command: ["python", "-u", "/app/gpu_exporter.py"]
+    volumes:
+      - ./monitoring/gpu_exporter.py:/app/gpu_exporter.py:ro
+    user: "10001:10001"           # root では動かさない
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]   # nvidia-smi だけ要る(計算はしない)
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d      # 7 日で古いデータを消す(ディスクを使い切らない)
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - infer-server
+      - gpu-exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}   # .env で上書きする。127.0.0.1 限定なので既定でも外からは見えない
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/infer-server.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro   # データソースとダッシュボードの置き場の定義
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro       # ダッシュボードの JSON
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

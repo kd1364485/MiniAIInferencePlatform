@@ -1,0 +1,21 @@
+# Prometheus の設定。「何を、どのくらいの間隔で取りに行くか」を書く(取得は Prometheus 側から行う = pull 型)
+global:
+  scrape_interval: 5s          # 5 秒ごとに各 /metrics を取得する(ダッシュボードの細かさの下限)
+  evaluation_interval: 15s     # アラートなどのルールを評価する間隔(今回はルール無し)
+
+scrape_configs:
+  # 推論サーバー自身のメトリクス(リクエスト数、レイテンシのヒストグラム、キューの深さ、エラー など)
+  # "infer-server" は docker compose のサービス名。同じネットワークの中では、名前で引ける(Docker の内蔵 DNS)
+  - job_name: infer-server
+    static_configs:
+      - targets: ["infer-server:9100"]
+
+  # GPU の使用率・VRAM(monitoring/gpu_exporter.py)
+  - job_name: gpu
+    static_configs:
+      - targets: ["gpu-exporter:9400"]
+
+  # Prometheus 自身(取得の成否、保存量など。ダッシュボードが動かないときの切り分け用)
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

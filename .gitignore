@@ -19,3 +19,6 @@ __pycache__/
 
 # ORT のパッケージ(Docker ビルド用にホストで取っておく。大きいのでコミットしない)
 TcpServer/ort-cache/*.tgz
+
+# docker compose の環境変数(Grafana のパスワードなど)。.env.example を写して作る。コミットしない
+TcpServer/.env
