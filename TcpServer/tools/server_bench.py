@@ -100,7 +100,8 @@ def run_one(name, provider, io, infer, batch, conns):
     base_mem = mem_used_now()                      # VRAM の基準は「サーバーを起動する前」に取る
     with open(log_path, "w") as log:
         srv = subprocess.Popen(
-            [ENV_SH, SERVER, MODEL, str(io), "1", "0", str(batch), str(infer), provider],
+            # bash 経由で起動する: 実行権限のビットは Windows の git 経由で失われやすいので、それに頼らない
+            ["bash", ENV_SH, SERVER, MODEL, str(io), "1", "0", str(batch), str(infer), provider],
             stdout=log, stderr=subprocess.STDOUT, cwd=WORK, env=env)
         ready = False
         for _ in range(300):                       # 最大 300 秒(TensorRT の初回エンジン作成を含む)
