@@ -23,9 +23,9 @@ ML Research ではなく **ML Systems** が狙い。
 9. Phase 9: Kubernetes / Distributed Inference
 
 ## 現在の進捗
-**Phase 7 完了**(2026-10-28 時点。GPU は RTX 3060 Laptop 6GB。M1〜M4 + 総括: GPU 比較基盤 → TensorRT(FP16) → C++ サーバーに GPU(cuda/trt) → INT8)。次は Phase 8(Docker GPU / Monitoring / AI Infrastructure)。
-Phase 6 完了(2026-10-27。M1〜M5: 推論サーバー → 切り分け → 重いモデル測定 → dynamic batching → Request Queue)。
-未解決: サーバー内でだけ出る Run() の約 +70us・約 1ms の「残り」の正体、ORT 経由の TensorRT がネイティブより速かった理由。INT8 は C++ サーバー未対応。
+**Phase 8 完了**(2026-10-28 時点。M1〜M5 + 総括: Docker + NVIDIA Container Toolkit → 2段階ビルドのイメージ → /metrics → Prometheus + Grafana(13パネル) → 資源・障害の見え方・再起動の検知)。次は Phase 9(Kubernetes / Distributed Inference)。入る前に範囲を相談する(ルール2: 新技術が一気に増える)。
+Phase 7 完了(2026-10-28。GPU は RTX 3060 Laptop 6GB。M1〜M4 + 総括: GPU 比較基盤 → TensorRT(FP16) → C++ サーバーに GPU(cuda/trt) → INT8)。Phase 6 完了(2026-10-27。M1〜M5: 推論サーバー → … → Request Queue)。
+未解決: `-p` で公開すると約33%遅い原因の確定(docker-proxy を無効にした再測定)、本物のクラッシュ・OOM での挙動、アラート(通知)は未実装、ORT 経由の TensorRT がネイティブより速かった理由。INT8 は C++ サーバー未対応。サーバーの外にあると分かった約1.3ms(カーネルのネットワーク・起床・bench 側)の内訳は未測定。
 関連フォルダ: リポジトリ `~/seiya7183517/`(GitHub: `kd1364485/MiniAIInferencePlatform`)の `TcpServer/`。ホーム直下に `CudaLearn/`, `OnnxLearn/`。ビルド・実行手順は `TcpServer/README.md` の冒頭。
 
 ## 進め方のルール
