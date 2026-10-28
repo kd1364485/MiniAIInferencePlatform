@@ -80,6 +80,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <onnxruntime_cxx_api.h>   // ONNX Runtime の C++ API(Ort::Session など)
+#include "metrics.h"               // Phase 8 M3: Prometheus 形式のメトリクスの出力口
 
 // ===== プロトコルのサイズ定義 =====
 // 固定長にしておくと「どこまでが1リクエストか」を長さだけで判断できる(区切り文字が要らない)。
@@ -115,6 +116,25 @@ std::atomic<uint64_t> g_qdepth_max{0};    // キューに溜まった件数の�
 std::atomic<uint64_t> g_stale{0};         // 返信を捨てた回数(接続が閉じた/別の接続になっていた)
 std::atomic<uint64_t> g_violations{0};    // 「1接続につき未完了1件まで」違反で接続を閉じた回数
 
+// ---- Phase 8 M3: /metrics で公開する統計(数えるだけ。ロックはしない) ----
+std::atomic<uint64_t> g_run_failed{0};       // Run() が例外を投げた回数(バッチ単位)
+std::atomic<uint64_t> g_send_failed{0};      // 返信を最後まで送れなかった回数
+std::atomic<uint64_t> g_conns_accepted{0};   // accept した接続の累計
+std::atomic<int64_t>  g_conns_active{0};     // いまつながっている接続数(close_conn で減る)
+// ヒストグラムを数えるか。起動時に1回だけ決める(ウォームアップを数えないよう、ウォームアップ後に true にする)。
+// 数えないときは、各所の if が1回外れるだけで、余計な処理はしない
+bool g_metrics_on = false;
+// リクエストの「サーバーの中の時間」(秒): 784B が揃った時刻 → 返信を send し終えた時刻。
+// クライアントから見た往復時間より、ネットワークの分だけ短い
+metrics::Histogram<13> g_lat_hist({0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01,
+                                   0.025, 0.05, 0.1, 0.25, 0.5, 1.0});
+// 1回の Run() にまとめた件数。バッチ化がどれだけ効いているかが見える
+metrics::Histogram<8> g_batch_hist({1, 2, 4, 8, 16, 32, 64, 128});
+
+static double seconds_since(Clock::time_point t) {
+    return std::chrono::duration<double>(Clock::now() - t).count();
+}
+
 // 最大値を更新する(他スレッドと競合するので compare_exchange でやり直す)
 static void atomic_max(std::atomic<uint64_t>& a, uint64_t v) {
     uint64_t cur = a.load();
@@ -129,6 +149,7 @@ struct Response {
     uint64_t gen;
     bool     ok;                 // false = 推論に失敗(接続を閉じてほしい)
     uint8_t  resp[kRespBytes];
+    Clock::time_point t_enq;     // リクエストをキューに入れた時刻(返信を送ったとき「サーバー内の時間」を測る)
 };
 
 // I/O worker → 推論 worker へのリクエスト。784B は「コピー」して持つ。
@@ -167,6 +188,7 @@ struct Conn {
     size_t   filled = 0;       // buf の何バイト目まで埋まっているか(0 なら空)
     uint64_t gen = 0;          // 接続の通し番号(キュー版): fd 番号が再利用されても別の接続と見分ける
     bool     in_flight = false;   // キュー版: 推論待ち(返信がまだ戻っていない)かどうか
+    Clock::time_point t_ready;    // インライン版: 784B が揃った時刻(メトリクスが有効なときだけ設定する)
 };
 
 // logits(10個)から返信 44B を作る: 先頭4B = argmax の予測数字、続く40B = logits
@@ -210,6 +232,7 @@ static void forward_batch(Ort::Session& session, const uint8_t* const* px, size_
     g_infer_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     g_requests += b;
     ++g_batches;
+    if (g_metrics_on) g_batch_hist.observe((double)b);
 
     // outs の中身は ORT が確保したメモリで、outs が生きている間だけ有効 → out にコピーして返す
     const float* all = outs[0].GetTensorData<float>();
@@ -230,7 +253,7 @@ static void run_inference(Ort::Session& session, const uint8_t* px, uint8_t* res
 // ※ close(fd) が最後なのは、閉じた後の fd 番号は他の接続に再利用されうるから。
 static void close_conn(Worker& w, std::unordered_map<int, Conn>& conns, int fd) {
     epoll_ctl(w.epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-    conns.erase(fd);
+    if (conns.erase(fd) > 0) --g_conns_active;    // 実際に消えたときだけ減らす(接続数のゲージを正しく保つ)
     close(fd);
 }
 
@@ -249,6 +272,7 @@ static void run_batch(Ort::Session& session, std::unordered_map<int, Conn>& conn
     } catch (const Ort::Exception& e) {
         // 例外を握りつぶさず報告し、このバッチの接続は閉じる(放置すると worker ごと terminate する)
         std::cerr << "Run() failed: " << e.what() << std::endl;
+        ++g_run_failed;
         for (size_t i = 0; i < b; ++i) fails.push_back(ready[i]);
         return;
     }
@@ -257,7 +281,12 @@ static void run_batch(Ort::Session& session, std::unordered_map<int, Conn>& conn
         uint8_t resp[kRespBytes];
         make_resp(logits.data() + i * 10, resp);
         int fd = ready[i];
-        if (send(fd, resp, kRespBytes, MSG_NOSIGNAL) != (ssize_t)kRespBytes) fails.push_back(fd);
+        if (send(fd, resp, kRespBytes, MSG_NOSIGNAL) != (ssize_t)kRespBytes) {
+            fails.push_back(fd);
+            ++g_send_failed;
+        } else if (g_metrics_on) {
+            g_lat_hist.observe(seconds_since(conns.at(fd).t_ready));   // 784B が揃ってから返信を送り終えるまで
+        }
         conns.at(fd).filled = 0;   // 次のリクエストのために空に戻す
     }
 }
@@ -319,6 +348,7 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
                     Conn nc;
                     nc.gen = next_gen++;
                     conns.emplace(cfd, nc);
+                    ++g_conns_active;
                 }
 
                 // キュー版: 推論 worker から届いた返信を取り出して、持ち主としてここで send する
@@ -333,8 +363,14 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
                         // fd が表に無い(閉じた) or gen が違う(同じ fd 番号の別の接続) → 返信を捨てる
                         if (cit == conns.end() || cit->second.gen != r.gen) { ++g_stale; continue; }
                         cit->second.in_flight = false;
-                        if (!r.ok || send(r.fd, r.resp, kRespBytes, MSG_NOSIGNAL) != (ssize_t)kRespBytes)
+                        // r.ok=false は推論の失敗(infer_loop が数えた)。送れなかったときだけ send の失敗として数える
+                        bool sent = r.ok && send(r.fd, r.resp, kRespBytes, MSG_NOSIGNAL) == (ssize_t)kRespBytes;
+                        if (!sent) {
+                            if (r.ok) ++g_send_failed;
                             close_conn(w, conns, r.fd);   // この後 cit は使わない
+                        } else if (g_metrics_on) {
+                            g_lat_hist.observe(seconds_since(r.t_enq));   // キューに入れてから返信を送り終えるまで
+                        }
                     }
                 }
                 continue;   // (a) はここで終わり。(b) の処理には進まない
@@ -370,6 +406,7 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
                 close_conn(w, conns, fd);   // ループの外で片付ける(c はもう使わない)
             } else if (c.filled == kReqBytes) {
                 if (!use_queue) {
+                    if (g_metrics_on) c.t_ready = Clock::now();   // 「サーバー内の時間」の始点(784B が揃った時刻)
                     ready.push_back(fd);    // インライン版: 推論待ちの列に並べる
                 } else if (c.in_flight) {
                     // 返信が戻る前に2件目が揃った = 1接続につき未完了1件までの約束違反(パイプライン)。
@@ -458,6 +495,7 @@ static void infer_loop(Ort::Session& session, size_t max_batch,
             forward_batch(session, px.data(), batch.size(), logits);
         } catch (const Ort::Exception& e) {
             std::cerr << "Run() failed: " << e.what() << std::endl;
+            ++g_run_failed;
             ok = false;   // 返信は ok=false にして、持ち主に接続を閉じてもらう
         }
 
@@ -468,6 +506,7 @@ static void infer_loop(Ort::Session& session, size_t max_batch,
             resp.fd = batch[i].fd;
             resp.gen = batch[i].gen;
             resp.ok = ok;
+            resp.t_enq = batch[i].t_enq;
             if (ok) make_resp(logits.data() + i * 10, resp.resp);
             Worker& w = *workers[batch[i].io_id];
             {
@@ -526,6 +565,61 @@ static void configure_provider(Ort::SessionOptions& so, const std::string& provi
     throw std::runtime_error("unknown provider: " + provider + " (cpu | cuda | trt | trt-fp16)");
 }
 
+// /metrics の本文を作る(GET のたびに、別スレッドから呼ばれる)。
+//   カウンタ(counter)は増えるだけの累計 → Prometheus 側で rate() を取って「1秒あたり」にする
+//   ゲージ(gauge)は今の値(キューの深さ、接続数)。ヒストグラムは区間ごとの件数(p99 を計算できる)
+struct BuildInfo {
+    std::string provider, model;
+    int workers, infer_threads;
+    size_t max_batch;
+};
+
+static std::string render_metrics(const BuildInfo& bi) {
+    std::ostringstream o;
+    o << std::setprecision(9);
+    using metrics::header;
+
+    header(o, "infer_requests_total", "counter", "Requests completed by the model (successful Run() results).");
+    o << "infer_requests_total " << g_requests.load() << '\n';
+    header(o, "infer_batches_total", "counter", "Number of Run() calls (batches).");
+    o << "infer_batches_total " << g_batches.load() << '\n';
+    header(o, "infer_run_seconds_total", "counter", "Total time spent inside session.Run(), in seconds.");
+    o << "infer_run_seconds_total " << g_infer_ns.load() / 1e9 << '\n';
+    header(o, "infer_queue_wait_seconds_total", "counter", "Total time requests waited in the shared queue (queue mode only).");
+    o << "infer_queue_wait_seconds_total " << g_qwait_ns.load() / 1e9 << '\n';
+
+    header(o, "infer_errors_total", "counter", "Errors by type.");
+    o << "infer_errors_total{type=\"protocol_violation\"} " << g_violations.load() << '\n'
+      << "infer_errors_total{type=\"stale_response\"} " << g_stale.load() << '\n'
+      << "infer_errors_total{type=\"run_failed\"} " << g_run_failed.load() << '\n'
+      << "infer_errors_total{type=\"send_failed\"} " << g_send_failed.load() << '\n';
+
+    size_t depth;
+    {   // キューの今の長さ。ロックは一瞬だけ(推論を止めない)
+        std::lock_guard<std::mutex> lk(g_q_mtx);
+        depth = g_q.size();
+    }
+    header(o, "infer_queue_depth", "gauge", "Requests currently waiting in the shared queue.");
+    o << "infer_queue_depth " << depth << '\n';
+    header(o, "infer_queue_depth_max", "gauge", "Largest queue depth seen since start.");
+    o << "infer_queue_depth_max " << g_qdepth_max.load() << '\n';
+    header(o, "infer_connections", "gauge", "Currently open client connections.");
+    o << "infer_connections " << g_conns_active.load() << '\n';
+    header(o, "infer_connections_accepted_total", "counter", "Client connections accepted since start.");
+    o << "infer_connections_accepted_total " << g_conns_accepted.load() << '\n';
+
+    g_lat_hist.render(o, "infer_request_duration_seconds",
+                      "Time inside the server from a complete 784-byte request to the reply being sent.");
+    g_batch_hist.render(o, "infer_batch_size", "Number of requests per Run() call.");
+
+    header(o, "infer_build_info", "gauge", "Server configuration (value is always 1).");
+    o << "infer_build_info{provider=\"" << metrics::escape_label(bi.provider)
+      << "\",model=\"" << metrics::escape_label(bi.model)
+      << "\",workers=\"" << bi.workers << "\",infer_threads=\"" << bi.infer_threads
+      << "\",max_batch=\"" << bi.max_batch << "\"} 1\n";
+    return o.str();
+}
+
 static int server_main(int argc, char** argv) {
     // ===== 引数 =====
     if (argc < 2) {
@@ -548,6 +642,9 @@ static int server_main(int argc, char** argv) {
     bool use_queue = infer_threads > 0;
     // M3: 推論を実行する場所。cpu(既定) / cuda / trt / trt-fp16
     std::string provider = (argc > 7) ? argv[7] : "cpu";
+    // Phase 8 M3: メトリクスを公開するポート。環境変数 INFER_METRICS_PORT(既定 9100、0 なら無効)
+    int metrics_port = 9100;
+    if (const char* e = std::getenv("INFER_METRICS_PORT")) metrics_port = std::atoi(e);
     if (use_queue && per_worker) {
         std::cerr << "note: キュー版では Session は共有のみ(per_worker_session は無視)\n";
         per_worker = 0;
@@ -643,6 +740,14 @@ static int server_main(int argc, char** argv) {
     for (int i = 0; i < infer_threads; ++i)
         threads.emplace_back(infer_loop, std::ref(session), max_batch, std::ref(workers));
 
+    // ===== メトリクスの出力口(別スレッド。推論の経路には触れない) =====
+    // ウォームアップは終わっているので、ここから先だけを数える(g_metrics_on はスレッドを作る前に決める)
+    g_metrics_on = metrics_port > 0;
+    if (g_metrics_on) {
+        BuildInfo bi{provider, std::filesystem::path(model_path).filename().string(), kWorkers, infer_threads, max_batch};
+        threads.emplace_back(metrics::serve, metrics_port, [bi] { return render_metrics(bi); }, std::cref(g_stop));
+    }
+
     // ===== メイン = acceptor(listen_fd だけを epoll で監視) =====
     int ep = epoll_create1(0);
     epoll_event ev{};
@@ -656,7 +761,8 @@ static int server_main(int argc, char** argv) {
               << ", session=" << (per_worker ? "per-worker" : "shared")
               << ", max_batch=" << max_batch
               << ", provider=" << provider
-              << ", infer_threads=" << infer_threads << (use_queue ? " (queue)" : " (inline)") << std::endl;
+              << ", infer_threads=" << infer_threads << (use_queue ? " (queue)" : " (inline)")
+              << ", metrics=" << (g_metrics_on ? ":" + std::to_string(metrics_port) : std::string("off")) << std::endl;
 
     int next = 0;   // ラウンドロビン用: 次に渡すワーカーの番号
     while (!g_stop) {
@@ -668,6 +774,7 @@ static int server_main(int argc, char** argv) {
         while (true) {
             int cfd = accept(listen_fd, nullptr, nullptr);
             if (cfd < 0) break;
+            ++g_conns_accepted;
             Worker& w = *workers[next];            // ラウンドロビンで担当ワーカーを選ぶ
             next = (next + 1) % kWorkers;
             {

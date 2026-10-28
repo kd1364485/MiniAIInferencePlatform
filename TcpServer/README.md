@@ -1237,3 +1237,68 @@ Phase 6 M5 と Phase 7 M3 のサーバーの測定は、この最適化なしの
 1. 2 段階ビルドにする理由 → ビルド用のコンパイラ等を、実行用のイメージに持ち込まない（小さく、攻撃面も小さい）
 2. GPU ドライバをイメージに入れない理由 → ホストのドライバのバージョンと合わせる必要があり、Toolkit が起動時に注入するため
 3. `-p` が遅くなり、`--network host` では遅くならない理由 → `-p` は docker-proxy を経由する（仮説。存在は確認済み）。`--network host` はホストのネットワークをそのまま使う
+
+
+## 2026/10/28　M3（メトリクスの出力口: /metrics）===============================================
+
+### やったこと
+- `src/metrics.h`（新規、外部ライブラリなし）: ヒストグラム（`Histogram<N>`、atomic の加算だけでロック不要）、Prometheus のテキスト形式の出力、
+  小さな HTTP サーバー（`GET /metrics` と `GET /healthz` だけに答える、別スレッド、1接続ずつ順に処理）
+- `infer_server.cpp`: 数える場所を足した（推論の経路には、atomic の加算と、有効時のヒストグラム観測だけ）。ポートは環境変数 `INFER_METRICS_PORT`（既定 9100、0 で無効）
+- 出すメトリクス:
+| 名前 | 種類 | 意味 |
+|---|---|---|
+| `infer_requests_total` | counter | モデルで処理し終えたリクエスト数 |
+| `infer_batches_total` | counter | Run() を呼んだ回数 |
+| `infer_run_seconds_total` | counter | Run() にかかった時間の合計 |
+| `infer_queue_wait_seconds_total` | counter | キューで待った時間の合計（キュー版のみ） |
+| `infer_errors_total{type=…}` | counter | protocol_violation / stale_response / run_failed / send_failed |
+| `infer_queue_depth` | gauge | いまキューで待っている件数 |
+| `infer_queue_depth_max` | gauge | 起動後の最大のキューの深さ |
+| `infer_connections` | gauge | いまつながっている接続数 |
+| `infer_connections_accepted_total` | counter | accept した接続の累計 |
+| `infer_request_duration_seconds` | histogram | サーバー内の時間（784B が揃ってから返信を送り終えるまで） |
+| `infer_batch_size` | histogram | 1回の Run() にまとめた件数 |
+| `infer_build_info{provider,model,workers,infer_threads,max_batch}` | gauge | 設定（値は常に 1） |
+- Grafana での使い方（M4）: 1秒あたり `rate(infer_requests_total[1m])`、p99 は `histogram_quantile(0.99, rate(infer_request_duration_seconds_bucket[1m]))`、
+  1件あたりの Run() は `rate(infer_run_seconds_total[1m]) / rate(infer_requests_total[1m])`
+
+### 動作確認（mnist、cpu、I/O 2 + 推論 2、b32、100 接続）
+- 形式: Content-Type `text/plain; version=0.0.4`、12 の TYPE、64 行
+- 整合: bench の完了数 191,280 = `infer_requests_total` = ヒストグラムの `_count`。接続数は負荷後に 0、累計 100、エラーは全部 0。
+  終了時の統計 `requests=547,745` は 3 回の bench の合計（191,280 + 133,036 + 223,429）と一致
+- 変な入力: 存在しないパス 404、POST 405、不正なバイト列は 405 で落ちない、クエリ付き `/metrics?x=1` は 200。
+  ヘッダを途中で止める遅いクライアントが居ると、取得は最大約 3 秒待たされる（打ち切りの設計）。推論は影響を受けない
+- `INFER_METRICS_PORT=0` でポートが開かない（`metrics=off`）
+
+### 測定
+サーバーの中の時間と、クライアントから見た往復時間（同じ負荷、同じ瞬間）:
+| | p50 | p99 |
+|---|---|---|
+| サーバー内（`infer_request_duration_seconds` から計算） | 648us | 2,483us |
+| クライアントから見た往復（infer_bench） | 1,908us | 5,079us |
+→ 差の約 1.26ms（p50）は、サーバーの外（カーネルのネットワーク、epoll からの起床、bench 側のスレッド）にある。
+Phase 6・7 で「サーバー内の約 1ms の残り」と書いていた正体が、初めてサーバーの内と外に切り分けられた
+
+メトリクスを数えるコスト（同じ条件、有効と無効を 3 回ずつ交互、req/s）:
+| 有効 | 無効 |
+|---|---|
+| 56,810 / 57,001 / 56,818（平均 56,876） | 56,475 / 57,133 / 57,111（平均 56,906） |
+差は -0.05% で、ばらつきの範囲。10 回/秒で `/metrics` を取得し続けても、推論の req/s に影響は見えなかった
+
+### 分かったこと（事実）
+- 数えるコストは、atomic の加算だけなので、ほぼ無料（-0.05%）。ロックを使わない設計が効いた
+- ヒストグラムがあると、平均では分からない p50/p99 が、サーバーの外から後で計算できる
+- クライアントの往復の約 2/3 は、サーバーの外にある（この条件では）
+
+### 制限・注意
+- 1スレッドで順に処理する。遅いクライアントで、取得が最大約 3 秒止まる（Prometheus の取得タイムアウトの既定は 10 秒）
+- 認証なし。接続数・エラー数・モデル名が見えるので、外部に公開するポートでは注意（M4 の構成では、Docker のネットワークの中だけで使う）
+- p99 は、バケットの間を線形補間した近似（バケットの上限は 0.1ms〜1s の13個）
+- 「サーバー内の時間」は、784B が揃ってから返信を送り終えるまで。受信側のカーネル待ちは含まない
+- GPU の使用率と VRAM は、サーバー自身は出さない（M4 で別の仕組み）
+
+### 説明できること（チェックポイント）
+1. counter / gauge / histogram の違いと使い分け → counter は増えるだけ（rate で1秒あたりに）、gauge は今の値、histogram は区間ごとの件数（p99 を後から計算できる）
+2. 平均だけでなくヒストグラムを使う理由 → 平均は尻尾（p99）を隠す。p99 は平均から計算できない
+3. 数える側にロックを使わない理由 → atomic の加算は1命令で済み、推論スレッドが待たされない。読む側は別スレッドで、少しずれた値を読んでもよい（メトリクスは近似でよい）

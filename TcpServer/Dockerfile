@@ -67,7 +67,8 @@ RUN useradd --system --uid 10001 --create-home --home-dir /home/app app \
 USER app
 WORKDIR /work
 
-EXPOSE 8080
+# 8080 = 推論(独自の TCP)、9100 = メトリクス(HTTP の /metrics と /healthz。環境変数 INFER_METRICS_PORT で変更、0 で無効)
+EXPOSE 8080 9100
 # PID 1 になる。infer_server は SIGTERM のハンドラを持つので docker stop で終了処理(統計の表示)が走る
 ENTRYPOINT ["infer_server"]
 CMD ["/models/mlp_dyn.onnx", "2", "1", "0", "32", "1", "cuda"]
