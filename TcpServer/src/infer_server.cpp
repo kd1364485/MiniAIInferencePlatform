@@ -135,6 +135,12 @@ static double seconds_since(Clock::time_point t) {
     return std::chrono::duration<double>(Clock::now() - t).count();
 }
 
+// このプロセスが始まった時刻(Unix 秒)。プロセスの開始時に1回だけ決まる。
+// 再起動すると値が変わるので、changes() で「再起動した回数」、time() との差で「稼働時間」が分かる。
+// (up は取得間隔(5秒)より速い再起動を見逃す。カウンタが 0 に戻るだけでは、再起動と区別しにくい)
+static const uint64_t g_start_unix = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+
 // 最大値を更新する(他スレッドと競合するので compare_exchange でやり直す)
 static void atomic_max(std::atomic<uint64_t>& a, uint64_t v) {
     uint64_t cur = a.load();
@@ -607,6 +613,9 @@ static std::string render_metrics(const BuildInfo& bi) {
     o << "infer_connections " << g_conns_active.load() << '\n';
     header(o, "infer_connections_accepted_total", "counter", "Client connections accepted since start.");
     o << "infer_connections_accepted_total " << g_conns_accepted.load() << '\n';
+
+    header(o, "infer_start_time_seconds", "gauge", "Unix time when this server process started (changes on restart).");
+    o << "infer_start_time_seconds " << g_start_unix << '\n';
 
     g_lat_hist.render(o, "infer_request_duration_seconds",
                       "Time inside the server from a complete 784-byte request to the reply being sent.");
