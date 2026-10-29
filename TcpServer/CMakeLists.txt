@@ -37,3 +37,7 @@ target_include_directories(run_bench PRIVATE ${ORT_DIR}/include)
 target_link_directories(run_bench PRIVATE ${ORT_DIR}/lib)
 target_link_libraries(run_bench PRIVATE onnxruntime Threads::Threads)
 set_target_properties(run_bench PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
+
+# Phase 9: 自作のロードバランサ(L4 の TCP プロキシ。ONNX Runtime には依存しない)
+add_executable(lb src/lb.cpp)
+target_link_libraries(lb PRIVATE Threads::Threads)

@@ -715,7 +715,10 @@ static int server_main(int argc, char** argv) {
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(8080);         // htons = ホスト→ネットワークのバイト順変換
+    // 推論のポート。環境変数 INFER_PORT(既定 8080)。同じマシンで複数台を動かすテスト(ロードバランサ)のため
+    int infer_port = 8080;
+    if (const char* e = std::getenv("INFER_PORT")) infer_port = std::atoi(e);
+    addr.sin_port = htons(infer_port);   // htons = ホスト→ネットワークのバイト順変換
     addr.sin_addr.s_addr = INADDR_ANY;   // 全ネットワークインターフェースで待ち受け
     if (bind(listen_fd, (sockaddr*)&addr, sizeof(addr)) < 0) die("bind");
     // 第2引数 = 「accept される前の接続待ち行列」の長さ。100接続が一斉に来ても溢れないよう大きめに
@@ -765,7 +768,7 @@ static int server_main(int argc, char** argv) {
     epoll_ctl(ep, EPOLL_CTL_ADD, listen_fd, &ev);
 
     // endl = 改行 + flush。起動完了をすぐ表示させる
-    std::cout << "infer_server: port 8080, model=" << model_path
+    std::cout << "infer_server: port " << infer_port << ", model=" << model_path
               << ", workers=" << kWorkers << ", intra_op_threads=" << intra
               << ", session=" << (per_worker ? "per-worker" : "shared")
               << ", max_batch=" << max_batch

@@ -61,8 +61,11 @@ void bench_client(int idx, const std::vector<uint8_t>& imgs, const std::vector<u
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(8080);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);   // 文字列のIP → バイナリ
+    // 接続先は環境変数で変えられる(ロードバランサ越しのテスト用)。INFER_HOST は IP アドレス、INFER_PORT はポート
+    const char* host_env = std::getenv("INFER_HOST");
+    const char* port_env = std::getenv("INFER_PORT");
+    addr.sin_port = htons(port_env ? std::atoi(port_env) : 8080);
+    inet_pton(AF_INET, host_env ? host_env : "127.0.0.1", &addr.sin_addr);   // 文字列のIP → バイナリ
     if (connect(fd, (sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return; }
     // サーバー側と同じ。小さい送信をカーネルに溜めさせない(計測にNagleの待ちを混ぜない)
     int one = 1;
