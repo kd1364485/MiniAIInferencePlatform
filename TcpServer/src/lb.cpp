@@ -440,7 +440,8 @@ int main(int argc, char** argv) {
     threads.emplace_back(health_loop, std::cref(specs));
     for (int i = 0; i < nthreads; ++i) threads.emplace_back(proxy_loop, listen_port);
     if (metrics_port > 0)
-        threads.emplace_back(metrics::serve, metrics_port, [] { return render_metrics(); }, std::cref(g_stop));
+        threads.emplace_back(metrics::serve, metrics_port, [] { return render_metrics(); }, std::cref(g_stop),
+                             std::function<bool()>{});   // /healthz は常に 200(lb は終了準備中の状態を持たない)
 
     std::cout << "lb: port " << listen_port << ", threads=" << nthreads << ", backends=" << argv[2]
               << ", metrics=" << (metrics_port > 0 ? ":" + std::to_string(metrics_port) : std::string("off")) << std::endl;

@@ -107,7 +107,14 @@ using Clock = std::chrono::steady_clock;
 std::atomic<uint64_t> g_requests{0};
 std::atomic<uint64_t> g_infer_ns{0};   // ORT Run() にかかった時間の合計
 std::atomic<uint64_t> g_batches{0};    // Run() を呼んだ回数(バッチ数)
-std::atomic<bool>     g_stop{false};   // SIGINT/SIGTERM で true になる「止めて」フラグ
+std::atomic<bool>     g_stop{false};   // SIGINT で true になる「いますぐ止めて」フラグ(Ctrl+C。接続は待たない)
+
+// ---- graceful shutdown(SIGTERM): 3 段階で止める ----
+//   段階1 g_draining: /healthz を 503 にする。受け付けと処理は続ける(Pod の削除が kube-proxy に伝わるまでの猶予)
+//   段階2 g_closing : listen を閉じ、ワーカーに「処理中が終わった接続から閉じて」と伝える
+//   段階3           : 接続が 0 になる(または時間切れ)のを待ってから終了する
+std::atomic<bool>     g_draining{false};   // SIGTERM で true(シグナルハンドラでできるのは、これを立てるところまで)
+std::atomic<bool>     g_closing{false};    // 段階2に入ったら true(メインスレッドだけが立てる)
 
 // ---- キュー版の統計 ----
 std::atomic<uint64_t> g_qwait_ns{0};      // キューで待った時間の合計(push → pop)
@@ -314,6 +321,7 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
     std::vector<int> fails;
     std::vector<Request> outbox;      // キュー版: この回で共有キューへ積む Request
     std::vector<Response> got;        // キュー版: 推論 worker から受け取った返信
+    std::vector<int> idle;            // 終了準備中: 閉じる待機中の接続(ループ中に conns を壊さないため、先に集める)
     while (!g_stop) {
         ready.clear();
         outbox.clear();
@@ -458,6 +466,22 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
                 run_batch(session, conns, ready.data() + off, b, fails);
             }
             for (int fd : fails) close_conn(w, conns, fd);   // 失敗した接続は最後にまとめて閉じる
+        }
+
+        // ---- 終了準備中(段階2以降): 処理が終わった(待機中の)接続を閉じる ----
+        // 毎回の最後に行うので、「返信を送り終えた直後の接続」も、次の周回でここで閉じられる(返事をしてから閉じる)。
+        // 待機中 = 受信が 0 バイト(filled==0)で、推論待ちでもない。受信の途中・推論待ちの接続は閉じない。
+        if (g_closing) {
+            idle.clear();
+            for (auto& [fd, c] : conns) {
+                if (c.filled != 0 || c.in_flight) continue;
+                // 次のリクエストがもうカーネルに届いていたら、閉じない(閉じると、読まれていないデータがあるので
+                // FIN でなく RST になり、そのリクエストが失われる)。次の周回で読んで、返事をしてから閉じる
+                char peek;
+                if (recv(fd, &peek, 1, MSG_PEEK | MSG_DONTWAIT) > 0) continue;
+                idle.push_back(fd);
+            }
+            for (int fd : idle) close_conn(w, conns, fd);
         }
     }
 }
@@ -662,10 +686,10 @@ static int server_main(int argc, char** argv) {
     // ===== シグナル =====
     // 相手が切れたソケットに send すると既定では SIGPIPE でプロセスごと死ぬ → 無視にする
     signal(SIGPIPE, SIG_IGN);
-    // Ctrl+C(SIGINT) / kill(SIGTERM) では g_stop を立てるだけ。
+    // Ctrl+C(SIGINT) は g_stop(いますぐ止める)、kill / docker stop / Pod の削除(SIGTERM) は g_draining(待ってから止める)。
     // ハンドラ内でできることは極めて限られるため、「フラグを立てる→メインループが気づいて後片付け」にする
     signal(SIGINT,  [](int) { g_stop = true; });
-    signal(SIGTERM, [](int) { g_stop = true; });
+    signal(SIGTERM, [](int) { g_draining = true; });
 
     // ===== ONNX Runtime: セッションは1個を全ワーカーで共有 =====
     // Env = ONNX Runtime のグローバルな実行環境(ログ設定など)。Session より長生きさせる必要がある
@@ -757,7 +781,8 @@ static int server_main(int argc, char** argv) {
     g_metrics_on = metrics_port > 0;
     if (g_metrics_on) {
         BuildInfo bi{provider, std::filesystem::path(model_path).filename().string(), kWorkers, infer_threads, max_batch};
-        threads.emplace_back(metrics::serve, metrics_port, [bi] { return render_metrics(bi); }, std::cref(g_stop));
+        threads.emplace_back(metrics::serve, metrics_port, [bi] { return render_metrics(bi); }, std::cref(g_stop),
+                             [] { return !g_draining.load(); });   // 終了準備中は /healthz が 503(readiness が外れる)
     }
 
     // ===== メイン = acceptor(listen_fd だけを epoll で監視) =====
@@ -776,11 +801,53 @@ static int server_main(int argc, char** argv) {
               << ", infer_threads=" << infer_threads << (use_queue ? " (queue)" : " (inline)")
               << ", metrics=" << (g_metrics_on ? ":" + std::to_string(metrics_port) : std::string("off")) << std::endl;
 
+    // graceful shutdown の時間(ミリ秒)。k8s では INFER_DRAIN_DELAY_MS=3000 INFER_DRAIN_MAX_MS=10000 を指定する。
+    //   delay: SIGTERM のあと、受け付けを続ける時間(Pod の削除が kube-proxy に伝わるまでの猶予。k8s 以外では 0 でよい)
+    //   max  : そのあと、処理中の接続の完了を待つ上限(超えたら強制終了。docker stop の既定 10 秒に収まるよう、既定は 5 秒)
+    int drain_delay_ms = 0, drain_max_ms = 5000;
+    if (const char* e = std::getenv("INFER_DRAIN_DELAY_MS")) drain_delay_ms = std::atoi(e);
+    if (const char* e = std::getenv("INFER_DRAIN_MAX_MS"))   drain_max_ms   = std::atoi(e);
+    bool drain_started = false;
+    Clock::time_point t_drain, t_close;
+
     int next = 0;   // ラウンドロビン用: 次に渡すワーカーの番号
     while (!g_stop) {
+        // ---- graceful shutdown の進行(SIGTERM を受けたとき) ----
+        if (g_draining) {
+            auto now = Clock::now();
+            if (!drain_started) {                       // 段階1: 受け付けは続けたまま、/healthz が 503 になる
+                drain_started = true;
+                t_drain = now;
+                std::cout << "draining: SIGTERM received, conns=" << g_conns_active.load()
+                          << ", keep accepting for " << drain_delay_ms << " ms" << std::endl;
+            }
+            if (!g_closing && now - t_drain >= std::chrono::milliseconds(drain_delay_ms)) {
+                // 段階2: listen を閉じる(以降の新規接続は、このポッドには来ない)→ ワーカーを起こして、閉じ始めさせる。
+                // g_closing を先に立てる(起こされたワーカーが、旗を見られるように)
+                epoll_ctl(ep, EPOLL_CTL_DEL, listen_fd, nullptr);
+                close(listen_fd);
+                t_close = now;
+                g_closing = true;
+                for (auto& w : workers) {
+                    uint64_t one = 1;
+                    if (write(w->event_fd, &one, sizeof(one)) < 0) {}
+                }
+                std::cout << "closing: listen closed, conns=" << g_conns_active.load() << std::endl;
+            }
+            if (g_closing) {
+                // 段階3: 接続が 0 になれば終了。drain_max_ms を過ぎたら、残っていても強制終了
+                bool timeout = now - t_close >= std::chrono::milliseconds(drain_max_ms);
+                if (g_conns_active.load() <= 0 || timeout) {
+                    std::cout << (timeout ? "drain timeout" : "drained") << ": remaining conns=" << g_conns_active.load()
+                              << ", took " << std::chrono::duration<double>(now - t_drain).count() << " s" << std::endl;
+                    break;
+                }
+            }
+        }
         epoll_event e;
-        // M7は -1(無期限)だったが、止められなくなるので500msごとに起きて g_stop を確認する
-        int n = epoll_wait(ep, &e, 1, 500);
+        // M7は -1(無期限)だったが、止められなくなるので500msごとに起きて g_stop を確認する。
+        // 終了準備中は、段階の切り替えと接続数の確認を細かくするため 50ms にする
+        int n = epoll_wait(ep, &e, 1, g_draining ? 50 : 500);
         if (n <= 0) continue;
         // listen_fd が読める = 新着接続あり。EAGAIN(cfd<0)になるまで全部 accept
         while (true) {

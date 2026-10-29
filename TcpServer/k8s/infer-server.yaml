@@ -30,9 +30,14 @@ spec:
       terminationGracePeriodSeconds: 15      # 停止の合図(SIGTERM)から、強制終了(SIGKILL)までの猶予。infer_server は SIGTERM で終了処理をする
       containers:
         - name: infer-server
-          image: infer-server:cpu            # kind load docker-image で、ノードに入れたイメージ
+          image: infer-server:cpu-graceful   # kind load docker-image で、ノードに入れたイメージ(cpu = graceful shutdown なしの旧版)
           imagePullPolicy: Never             # レジストリからは取得しない(ノードに無ければ、起動に失敗して気づける)
           args: ["/models/mnist.onnx", "2", "1", "0", "32", "1", "cpu"]
+          env:
+            # graceful shutdown: SIGTERM のあと 3 秒は受け付けを続け(Pod の削除が kube-proxy に伝わるまでの猶予)、
+            # そのあと最大 10 秒、処理中の接続の完了を待つ。3 + 10 = 13 秒 < terminationGracePeriodSeconds(15 秒)
+            - {name: INFER_DRAIN_DELAY_MS, value: "3000"}
+            - {name: INFER_DRAIN_MAX_MS, value: "10000"}
           ports:
             - {name: infer, containerPort: 8080}
             - {name: metrics, containerPort: 9100}

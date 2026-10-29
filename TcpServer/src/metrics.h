@@ -103,8 +103,11 @@ inline void reply(int fd, int code, const char* status, const char* content_type
 // 別スレッドで動く HTTP サーバー(1接続ずつ順に処理する。Prometheus の取得は数秒に1回で足りる)。
 //   render_body : GET /metrics のたびに呼ばれ、メトリクスの本文を作る
 //   stop        : true になったら止まる(accept を 500ms ごとに起きて確認する)
+//   healthy     : GET /healthz の答え。false を返すと 503(終了準備中 = 振り分けから外してほしい)。
+//                 省略(空)なら、常に 200。/metrics は、終了準備中も答え続ける(最後の様子を取れるように)
 // bind に失敗してもサーバー全体は止めない(推論が本体で、メトリクスはおまけ)。
-inline void serve(int port, std::function<std::string()> render_body, const std::atomic<bool>& stop) {
+inline void serve(int port, std::function<std::string()> render_body, const std::atomic<bool>& stop,
+                  std::function<bool()> healthy = nullptr) {
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -151,7 +154,10 @@ inline void serve(int port, std::function<std::string()> render_body, const std:
 
         if (!is_get)                 reply(cfd, 405, "Method Not Allowed", "text/plain", "only GET is supported\n");
         else if (path == "/metrics") reply(cfd, 200, "OK", "text/plain; version=0.0.4; charset=utf-8", render_body());
-        else if (path == "/healthz") reply(cfd, 200, "OK", "text/plain", "ok\n");
+        else if (path == "/healthz") {
+            if (!healthy || healthy()) reply(cfd, 200, "OK", "text/plain", "ok\n");
+            else                       reply(cfd, 503, "Service Unavailable", "text/plain", "draining\n");
+        }
         else                         reply(cfd, 404, "Not Found", "text/plain", "not found\n");
         close(cfd);
     }
