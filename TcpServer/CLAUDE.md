@@ -23,9 +23,10 @@ ML Research ではなく **ML Systems** が狙い。
 9. Phase 9: Kubernetes / Distributed Inference
 
 ## 現在の進捗
-**Phase 8 完了**(2026-10-28 時点。M1〜M5 + 総括: Docker + NVIDIA Container Toolkit → 2段階ビルドのイメージ → /metrics → Prometheus + Grafana(13パネル) → 資源・障害の見え方・再起動の検知)。次は Phase 9(Kubernetes / Distributed Inference)。入る前に範囲を相談する(ルール2: 新技術が一気に増える)。
+**Phase 9 進行中**(2026-10-29 時点)。範囲は相談して決めた: 先に「分散の本質」を自作 → そのあと Kubernetes の最小構成。完了: M1 自作ロードバランサ `lb`(epoll の L4 プロキシ、ヘルスチェック、DNS で台数に追従)、M2 Docker に組み込み + 複数台の測定(1枚の GPU ではワーカーを増やすと遅くなる: 62k → 50k → 40k req/s、原因はバッチが割れること)。**M3 Kubernetes(kubectl + kind を入れて、Deployment/Service/probe/ローリング更新を自作 LB と比べる)は、ユーザーが保留中**。導入は、許可をもらってから(ルール2)。
+Phase 8 完了(2026-10-28。M1〜M5 + 総括: Docker + NVIDIA Container Toolkit → 2段階ビルドのイメージ → /metrics → Prometheus + Grafana → 資源・障害の見え方・再起動の検知)。
 Phase 7 完了(2026-10-28。GPU は RTX 3060 Laptop 6GB。M1〜M4 + 総括: GPU 比較基盤 → TensorRT(FP16) → C++ サーバーに GPU(cuda/trt) → INT8)。Phase 6 完了(2026-10-27。M1〜M5: 推論サーバー → … → Request Queue)。
-未解決: `-p` で公開すると約33%遅い原因の確定(docker-proxy を無効にした再測定)、本物のクラッシュ・OOM での挙動、アラート(通知)は未実装、ORT 経由の TensorRT がネイティブより速かった理由。INT8 は C++ サーバー未対応。サーバーの外にあると分かった約1.3ms(カーネルのネットワーク・起床・bench 側)の内訳は未測定。
+未解決: LB を挟むと直接より約4〜10%速く出た理由(揺らぎ約9%と近く、未確認)、複数プロセスが1枚の GPU を分け合うときの時分割のコスト(バッチが割れる影響と、切り分けていない)、`-p` で公開すると約33%遅い原因の確定(docker-proxy を無効にした再測定)、本物のクラッシュ・OOM での挙動、アラート(通知)は未実装、ORT 経由の TensorRT がネイティブより速かった理由。INT8 は C++ サーバー未対応。サーバーの外にあると分かった約1.3ms(カーネルのネットワーク・起床・bench 側)の内訳は未測定。
 関連フォルダ: リポジトリ `~/seiya7183517/`(GitHub: `kd1364485/MiniAIInferencePlatform`)の `TcpServer/`。ホーム直下に `CudaLearn/`, `OnnxLearn/`。ビルド・実行手順は `TcpServer/README.md` の冒頭。
 
 ## 進め方のルール
