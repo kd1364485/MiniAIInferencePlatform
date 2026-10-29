@@ -1,0 +1,24 @@
+# Phase 9 M3: kind(Docker の中に作る、お試し用の Kubernetes)のクラスタ設定。
+#   作る:   kind create cluster --name infer --config k8s/kind-config.yaml
+#   消す:   kind delete cluster --name infer
+#
+# ノードは Docker のコンテナ 1 つ(制御プレーンとワーカーを兼ねる)。本物のサーバー 1 台の代わり。
+# ノードの Kubernetes のバージョンは、kind v0.33.0 の既定の v1.37.0(ダイジェストで固定)に合わせる。
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: infer
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    extraMounts:
+      # ホストの models/(git 管理外。tools/export_mlp.py で作る)を、ノードの /models に見せる。
+      # ポッドは、さらにそこを hostPath として、読み取り専用でマウントする(イメージにモデルを入れない)
+      - hostPath: /home/seiya7183517/seiya7183517/TcpServer/models
+        containerPath: /models
+        readOnly: true
+    extraPortMappings:
+      # 切り替えの試験で、ホストのクライアントから Service に届くための穴。ホストの 127.0.0.1:18080 → ノードの 30080(NodePort)
+      - containerPort: 30080
+        hostPort: 18080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

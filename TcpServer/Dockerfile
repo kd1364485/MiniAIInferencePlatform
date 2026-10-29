@@ -71,6 +71,22 @@ RUN useradd --system --uid 10001 --create-home --home-dir /home/app app
 USER app
 ENTRYPOINT ["infer_bench"]
 
+# ============ CPU 専用の推論サーバーの段階(Phase 9 M3: Kubernetes のクラスタで使う) ============
+# GPU を使わない構成(provider=cpu)なら、CUDA / cuDNN は要らない。素の ubuntu に、ORT の本体(libonnxruntime.so と
+# providers_shared)と infer_server だけを置く。約 5.6GB の GPU 版に対して、数十〜百数十 MB になる。
+# kind(Docker の中に作る Kubernetes)のノードにイメージを複製するときの、時間とディスクが小さくて済む。
+# 注意: ORT の GPU 版のパッケージから本体だけを取り出している。cuda / tensorrt のプロバイダの .so は置かないので、
+#       provider に cuda / trt を指定すると、起動時に例外で止まる(fail fast)。
+# ビルド: docker build --target cpu -t infer-server:cpu .
+FROM ubuntu:24.04 AS cpu
+COPY --from=build /opt/ort/lib/libonnxruntime.so* /opt/ort/lib/libonnxruntime_providers_shared.so /opt/ort/lib/
+COPY --from=build /src/build/infer_server /usr/local/bin/infer_server
+RUN useradd --system --uid 10001 --create-home --home-dir /home/app app
+USER app
+EXPOSE 8080 9100
+ENTRYPOINT ["infer_server"]
+CMD ["/models/mnist.onnx", "2", "1", "0", "32", "1", "cpu"]
+
 # ============ 実行用の段階(推論サーバー。最後の段階なので、docker build の既定になる) ============
 # CUDA 13 のランタイムと cuDNN 9 が入った公式イメージ。ORT の CUDA プロバイダが必要とする
 # libcudart / libcublas / libcurand / libcudnn がここに含まれる(ホストのドライバは Toolkit が注入)

@@ -1,0 +1,25 @@
+# Phase 9 M3: クラスタの「内側」から負荷をかける Job(自作 lb の測定で bench を内側から当てたのと同じ理由)。
+#   実行:  kubectl apply -f k8s/bench-job.yaml && kubectl logs -f job/infer-bench
+#   やり直し: kubectl delete job infer-bench
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: infer-bench
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bench
+          image: infer-bench:latest
+          imagePullPolicy: Never
+          args: ["100", "20", "dummy"]      # <clients> <seconds> dummy
+          env:
+            - {name: INFER_HOST, value: infer-server}   # Service 名(クラスタ内 DNS で引く)
+            - {name: INFER_PORT, value: "8080"}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
