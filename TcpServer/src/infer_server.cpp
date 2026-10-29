@@ -823,7 +823,8 @@ static int server_main(int argc, char** argv) {
             }
             if (!g_closing && now - t_drain >= std::chrono::milliseconds(drain_delay_ms)) {
                 // 段階2: listen を閉じる(以降の新規接続は、このポッドには来ない)→ ワーカーを起こして、閉じ始めさせる。
-                // g_closing を先に立てる(起こされたワーカーが、旗を見られるように)
+                // g_closing は、ワーカーを起こす(event_fd に書く)より前に立てる。逆だと、起こされたワーカーが
+                // まだ false の旗を見て、掃除せずに眠り直し、次のデータが来るまで旗に気づけない(書いてから通知する)
                 epoll_ctl(ep, EPOLL_CTL_DEL, listen_fd, nullptr);
                 close(listen_fd);
                 t_close = now;
