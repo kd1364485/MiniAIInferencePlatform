@@ -49,9 +49,29 @@ WORKDIR /src
 COPY CMakeLists.txt .
 COPY src ./src
 RUN cmake -S . -B build -DORT_DIR=/opt/ort -DCMAKE_BUILD_TYPE=Release \
- && cmake --build build -j"$(nproc)" --target infer_server
+ && cmake --build build -j"$(nproc)" --target infer_server lb infer_bench
 
-# ============ 実行用の段階 ============
+# ============ ロードバランサ(lb)の段階 ============
+# lb は ONNX Runtime にも CUDA にも依存しない(C++ の標準ライブラリだけ)ので、素の ubuntu で足りる。小さい。
+# 起動: docker run ... infer-lb <listen_port> <host:port:health_port>[,...] [threads] [metrics_port]
+FROM ubuntu:24.04 AS lb
+COPY --from=build /src/build/lb /usr/local/bin/lb
+RUN useradd --system --uid 10001 --create-home --home-dir /home/app app
+USER app
+EXPOSE 8080 9101
+ENTRYPOINT ["lb"]
+CMD ["8080", "worker:8080:9100", "2", "9101"]
+
+# ============ 負荷をかける側(infer_bench)の段階 ============
+# 同じ Docker ネットワークの「内側」から負荷をかけるためのイメージ。ホストから -p 経由でかけると、
+# docker-proxy を通って遅くなる(Phase 8 M2)ので、ロードバランサの測定には、内側から当てる
+FROM ubuntu:24.04 AS bench
+COPY --from=build /src/build/infer_bench /usr/local/bin/infer_bench
+RUN useradd --system --uid 10001 --create-home --home-dir /home/app app
+USER app
+ENTRYPOINT ["infer_bench"]
+
+# ============ 実行用の段階(推論サーバー。最後の段階なので、docker build の既定になる) ============
 # CUDA 13 のランタイムと cuDNN 9 が入った公式イメージ。ORT の CUDA プロバイダが必要とする
 # libcudart / libcublas / libcurand / libcudnn がここに含まれる(ホストのドライバは Toolkit が注入)
 FROM nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04 AS runtime
