@@ -1,0 +1,52 @@
+######## workers=8 per_worker_session=1 round=1
+-- bench
+connections: 100  duration: 5s  completed: 262412  served_conns: 100/100  req/s: 52482.4
+latency(us): p50=1531  p95=4356  p99=6873  max=22243
+-- server
+requests=262412  avg ORT Run()=104.664 us  batches=262412  avg_batch=1  Run()/request=104.664 us
+[profile] Run() を、前の Run() からの間隔 × CPU が替わったか、で分けた平均
+  間隔        CPU     回数      壁時計(us)  CPU時間(us)  自発的切替/回  非自発的切替/回
+  <20us       同じ  150767          87.2         88.7          0.000            0.004
+  <20us       別     14              87.2         88.4          0.000            0.000
+  20-100us    同じ  87493          123.2        125.9          0.000            0.006
+  20-100us    別     227            100.7        101.0          0.000            0.009
+  100us-1ms   同じ  19755          146.6        152.0          0.000            0.009
+  100us-1ms   別     3570           118.8        121.9          0.000            0.007
+  >=1ms       同じ  564            297.7        326.2          0.000            0.043
+  >=1ms       別     174            210.1        218.5          0.000            0.006
+-- softirq / stat
+  全CPU: 忙しい時間 4826 jiffies / 全体 9750 jiffies(10ms 単位)
+  softirq は、忙しい時間の 31.1% / 全体の 15.42%  (softirq=1503, irq=0, system=1342, user=1981)
+  NET_RX 215911 回 / NET_TX 462 回(約 6 秒間)
+-- perf stat (サーバーのプロセス全体、software event)
+          36470.42 msec task-clock:u                     #    5.609 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+                 0      cpu-migrations:u                 #    0.000 /sec                      
+               124      page-faults:u                    #    3.400 /sec                      
+       6.501814799 seconds time elapsed
+######## workers=8 per_worker_session=1 round=2
+-- bench
+connections: 100  duration: 5s  completed: 240126  served_conns: 100/100  req/s: 48025.2
+latency(us): p50=1589  p95=5038  p99=8814  max=29097
+-- server
+requests=240126  avg ORT Run()=115.185 us  batches=240126  avg_batch=1  Run()/request=115.185 us
+[profile] Run() を、前の Run() からの間隔 × CPU が替わったか、で分けた平均
+  間隔        CPU     回数      壁時計(us)  CPU時間(us)  自発的切替/回  非自発的切替/回
+  <20us       同じ  137287          92.3         93.7          0.000            0.004
+  <20us       別     10             100.8        102.0          0.000            0.000
+  20-100us    同じ  80141          136.7        139.1          0.000            0.007
+  20-100us    別     200            122.3        127.2          0.000            0.010
+  100us-1ms   同じ  18368          170.4        175.4          0.000            0.013
+  100us-1ms   別     3284           141.0        143.9          0.000            0.007
+  >=1ms       同じ  754            482.4        509.4          0.000            0.089
+  >=1ms       別     234            248.3        251.0          0.004            0.000
+-- softirq / stat
+  全CPU: 忙しい時間 4896 jiffies / 全体 9703 jiffies(10ms 単位)
+  softirq は、忙しい時間の 30.9% / 全体の 15.60%  (softirq=1514, irq=0, system=1408, user=1974)
+  NET_RX 173026 回 / NET_TX 335 回(約 6 秒間)
+-- perf stat (サーバーのプロセス全体、software event)
+          36555.48 msec task-clock:u                     #    5.622 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+                 0      cpu-migrations:u                 #    0.000 /sec                      
+               124      page-faults:u                    #    3.392 /sec                      
+       6.502208869 seconds time elapsed

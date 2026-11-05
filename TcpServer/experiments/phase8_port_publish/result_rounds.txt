@@ -1,0 +1,15 @@
+round=1 cond=host dst=127.0.0.1 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 221191  served_conns: 100/100  req/s: 44238.2 latency(us): p50=2173  p95=3354  p99=4105  max=8773 accuracy: 208010/221191 = 94.0409% 
+# docker-proxy: 2 個  container_ip=172.17.0.2  host_ip=10.17.41.59
+round=1 cond=p_loop dst=127.0.0.1 proxy_cpu_ms=21670 | connections: 100  duration: 5s  completed: 152865  served_conns: 100/100  req/s: 30573 latency(us): p50=3108  p95=5073  p99=6517  max=13959 accuracy: 143726/152865 = 94.0215% 
+round=1 cond=p_cip dst=172.17.0.2 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 349585  served_conns: 100/100  req/s: 69917 latency(us): p50=1362  p95=2069  p99=2469  max=5014 accuracy: 328682/349585 = 94.0206% 
+round=1 cond=p_nat dst=10.17.41.59 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 333890  served_conns: 100/100  req/s: 66778 latency(us): p50=1426  p95=2158  p99=2570  max=4996 accuracy: 313944/333890 = 94.0262% 
+round=2 cond=host dst=127.0.0.1 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 213141  served_conns: 100/100  req/s: 42628.2 latency(us): p50=2248  p95=3502  p99=4276  max=8749 accuracy: 200402/213141 = 94.0232% 
+# docker-proxy: 2 個  container_ip=172.17.0.2  host_ip=10.17.41.59
+round=2 cond=p_loop dst=127.0.0.1 proxy_cpu_ms=22100 | connections: 100  duration: 5s  completed: 146136  served_conns: 100/100  req/s: 29227.2 latency(us): p50=3194  p95=5583  p99=7376  max=18740 accuracy: 137378/146136 = 94.007% 
+round=2 cond=p_cip dst=172.17.0.2 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 336138  served_conns: 100/100  req/s: 67227.6 latency(us): p50=1395  p95=2241  p99=2777  max=7031 accuracy: 316012/336138 = 94.0126% 
+round=2 cond=p_nat dst=10.17.41.59 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 311179  served_conns: 100/100  req/s: 62235.8 latency(us): p50=1517  p95=2365  p99=3095  max=8225 accuracy: 292572/311179 = 94.0205% 
+round=3 cond=host dst=127.0.0.1 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 207663  served_conns: 100/100  req/s: 41532.6 latency(us): p50=2309  p95=3610  p99=4415  max=10335 accuracy: 195239/207663 = 94.0172% 
+# docker-proxy: 2 個  container_ip=172.17.0.2  host_ip=10.17.41.59
+round=3 cond=p_loop dst=127.0.0.1 proxy_cpu_ms=21660 | connections: 100  duration: 5s  completed: 139227  served_conns: 100/100  req/s: 27845.4 latency(us): p50=3385  p95=5703  p99=7404  max=14580 accuracy: 130893/139227 = 94.0141% 
+round=3 cond=p_cip dst=172.17.0.2 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 325465  served_conns: 100/100  req/s: 65093 latency(us): p50=1442  p95=2306  p99=2881  max=8172 accuracy: 305983/325465 = 94.0141% 
+round=3 cond=p_nat dst=10.17.41.59 proxy_cpu_ms=0 | connections: 100  duration: 5s  completed: 319791  served_conns: 100/100  req/s: 63958.2 latency(us): p50=1481  p95=2307  p99=2812  max=6016 accuracy: 300658/319791 = 94.017% 

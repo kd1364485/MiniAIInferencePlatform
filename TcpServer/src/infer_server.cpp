@@ -101,6 +101,54 @@ static void set_nonblocking(int fd) {
 
 using Clock = std::chrono::steady_clock;
 
+#ifdef INFER_PROFILE_RUN
+// ---- 調査用(-DINFER_PROFILE_RUN でビルドしたときだけ有効。通常のビルドでは何も入らない) ----
+// Run() が、サーバーの中でだけ遅い(ネットワークなしの run_bench より約 +70us)理由を切り分けるため、
+// Run() ごとに「前の Run() の終わりから何 us 空いたか」と「前と別の CPU で動いたか」を記録し、
+// 区分ごとに、壁時計の時間・そのスレッドが CPU を使った時間・コンテキストスイッチの回数を集める。
+//   壁時計 ≒ CPU 時間      → 待たされていない。計算そのものが遅い(キャッシュ・周波数など)
+//   壁時計 > CPU 時間      → CPU を取られて(または待って)いる
+#include <sched.h>
+#include <sys/resource.h>
+#include <time.h>
+#include <cstdio>
+struct ProfBucket {
+    std::atomic<uint64_t> n{0}, wall_ns{0}, cpu_ns{0}, vcsw{0}, ivcsw{0};
+};
+constexpr int kProfGaps = 4;                 // 前の Run() から: <20us / 20〜100us / 100us〜1ms / 1ms以上
+ProfBucket g_prof[kProfGaps * 2];            // × (同じ CPU / 別の CPU)
+static uint64_t prof_thread_cpu_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static int prof_gap_bucket(uint64_t gap_ns) {
+    return gap_ns < 20000 ? 0 : gap_ns < 100000 ? 1 : gap_ns < 1000000 ? 2 : 3;
+}
+static void prof_reset() {
+    for (auto& b : g_prof) { b.n = 0; b.wall_ns = 0; b.cpu_ns = 0; b.vcsw = 0; b.ivcsw = 0; }
+}
+static void prof_print() {
+    static const char* gaps[kProfGaps] = {"<20us", "20-100us", "100us-1ms", ">=1ms"};
+    std::cout << "[profile] Run() を、前の Run() からの間隔 × CPU が替わったか、で分けた平均\n"
+              << "  間隔        CPU     回数      壁時計(us)  CPU時間(us)  自発的切替/回  非自発的切替/回\n";
+    for (int g = 0; g < kProfGaps; ++g) {
+        for (int m = 0; m < 2; ++m) {
+            const ProfBucket& b = g_prof[g * 2 + m];
+            uint64_t n = b.n.load();
+            if (n == 0) continue;
+            char line[200];
+            std::snprintf(line, sizeof(line), "  %-10s  %-6s  %-8llu  %10.1f  %11.1f  %13.3f  %15.3f\n",
+                          gaps[g], m ? "別" : "同じ", (unsigned long long)n,
+                          b.wall_ns.load() / (double)n / 1000.0, b.cpu_ns.load() / (double)n / 1000.0,
+                          b.vcsw.load() / (double)n, b.ivcsw.load() / (double)n);
+            std::cout << line;
+        }
+    }
+    std::cout << std::flush;
+}
+#endif
+
 // サーバー全体の統計。ワーカー間共有なので atomic(1命令の加算だけ守れば足りる)
 // mutex を使わない理由: 「+= する」という1操作だけの保護なので、CPUの不可分命令(atomic)で足り、
 // ロック待ちでワーカーが止まるコストを避けられる(Phase 2 の Q2 と同じ使い分け)。
@@ -238,10 +286,33 @@ static void forward_batch(Ort::Session& session, const uint8_t* const* px, size_
     int64_t shape[4] = {(int64_t)b, 1, 28, 28};
     Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), shape, 4);
 
+#ifdef INFER_PROFILE_RUN
+    thread_local Clock::time_point prof_last_end{};
+    thread_local int prof_last_cpu = -1;
+    const int prof_cpu = sched_getcpu();
+    rusage prof_ru0{}, prof_ru1{};
+    getrusage(RUSAGE_THREAD, &prof_ru0);
+    const uint64_t prof_c0 = prof_thread_cpu_ns();
+#endif
     // --- 推論本体。Run() だけを steady_clock で挟んで測る ---
     auto t0 = Clock::now();
     auto outs = session.Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 1);
     auto t1 = Clock::now();
+#ifdef INFER_PROFILE_RUN
+    const uint64_t prof_c1 = prof_thread_cpu_ns();
+    getrusage(RUSAGE_THREAD, &prof_ru1);
+    if (prof_last_cpu >= 0) {   // 2回目以降だけ記録する(1回目は「前の Run()」がない)
+        const uint64_t gap = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t0 - prof_last_end).count();
+        ProfBucket& pb = g_prof[prof_gap_bucket(gap) * 2 + (prof_cpu != prof_last_cpu ? 1 : 0)];
+        ++pb.n;
+        pb.wall_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        pb.cpu_ns += prof_c1 - prof_c0;
+        pb.vcsw += (uint64_t)(prof_ru1.ru_nvcsw - prof_ru0.ru_nvcsw);
+        pb.ivcsw += (uint64_t)(prof_ru1.ru_nivcsw - prof_ru0.ru_nivcsw);
+    }
+    prof_last_end = t1;
+    prof_last_cpu = prof_cpu;
+#endif
     g_infer_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     g_requests += b;
     ++g_batches;
@@ -719,6 +790,9 @@ static int server_main(int argc, char** argv) {
             if (max_batch == 1) break;   // 1回だけで足りる
         }
         g_requests = 0; g_infer_ns = 0; g_batches = 0;   // ウォームアップ分の統計は捨てる
+#ifdef INFER_PROFILE_RUN
+        prof_reset();
+#endif
     }
 
     // per_worker=1 のときだけ使う、worker 専用の Session 群(共有時は空のまま)
@@ -875,6 +949,9 @@ static int server_main(int argc, char** argv) {
               << (nb ? g_infer_ns.load() / nb / 1000.0 : 0.0) << " us"
               << "  batches=" << nb << "  avg_batch=" << (nb ? (double)n / nb : 0.0)
               << "  Run()/request=" << (n ? g_infer_ns.load() / n / 1000.0 : 0.0) << " us" << std::endl;
+#ifdef INFER_PROFILE_RUN
+    prof_print();
+#endif
     if (use_queue) {
         // キュー待ち時間 = push → pop。p50 の内訳(I/O・キュー待ち・Run())を分けて語るための数字
         std::cout << "queue: avg_wait=" << (n ? g_qwait_ns.load() / n / 1000.0 : 0.0) << " us"

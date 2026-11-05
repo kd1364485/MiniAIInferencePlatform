@@ -1,0 +1,14 @@
+######## strace  workers=8 per_worker_session=1
+connections: 100  duration: 5s  completed: 70673  served_conns: 100/100  req/s: 14134.6
+requests=70673  avg ORT Run()=60.867 us  batches=70673  avg_batch=1  Run()/request=60.867 us
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 40.38   14.009501         198     70673           sendto
+ 34.16   11.851590         167     70773           recvfrom
+ 25.30    8.777235        1374      6388         1 epoll_wait
+  0.09    0.030006         143       209           epoll_ctl
+  0.03    0.010864          63       171           read
+  0.03    0.009648          93       103           write
+  0.01    0.004202         382        11           futex
+------ ----------- ----------- --------- --------- ----------------
+100.00   34.693046         233    148328         1 total

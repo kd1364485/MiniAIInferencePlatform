@@ -1,0 +1,8 @@
+# host と bridge の比較(2026-11-05)。サーバーの終了時の統計(docker logs の最後の 2 行)
+# 条件: infer-server:gpu、/models/mnist.onnx 2 1 0 32 2 cuda、bench 100 接続 5 秒
+== host (--network host、bench → 127.0.0.1)   req/s: 43391.8
+requests=216959  avg ORT Run()=836.77 us  batches=10987  avg_batch=19.7469  Run()/request=42.374 us
+queue: avg_wait=377.101 us  max_wait=11433 us  max_depth=97  stale_dropped=0  violations=0
+== bridge (-p 8080:8080、bench → コンテナの IP 172.17.0.2)   req/s: 64700
+requests=323500  avg ORT Run()=495.556 us  batches=14616  avg_batch=22.1333  Run()/request=22.389 us
+queue: avg_wait=143.059 us  max_wait=8769.11 us  max_depth=90  stale_dropped=0  violations=0

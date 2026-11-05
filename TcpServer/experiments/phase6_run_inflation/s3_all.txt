@@ -1,0 +1,16 @@
+######## S3 round=1
+threads=1 shared=1  think=0us(none)  burners=0  avg Run()=16.693 us  cpu=16.981 us  runs/s=57894
+threads=1 shared=1  think=0us(net)  burners=0  avg Run()=48.977 us  cpu=49.956 us  runs/s=2754
+threads=8 shared=1  think=0us(none)  burners=0  avg Run()=64.893 us  cpu=55.571 us  runs/s=120383
+threads=8 shared=1  think=0us(net)  burners=0  avg Run()=67.403 us  cpu=67.698 us  runs/s=15788
+threads=8 shared=1  think=0us(none)  burners=4  avg Run()=119.743 us  cpu=106.848 us  runs/s=62784
+threads=8 shared=1  think=0us(none)  burners=12  avg Run()=122.386 us  cpu=106.85 us  runs/s=61608
+threads=8 shared=1  think=0us(net)  burners=12  avg Run()=135.711 us  cpu=132.443 us  runs/s=3285
+######## S3 round=2
+threads=1 shared=1  think=0us(none)  burners=0  avg Run()=18.026 us  cpu=18.397 us  runs/s=53460
+threads=1 shared=1  think=0us(net)  burners=0  avg Run()=31.693 us  cpu=32.212 us  runs/s=4542
+threads=8 shared=1  think=0us(none)  burners=0  avg Run()=55.194 us  cpu=47.067 us  runs/s=141581
+threads=8 shared=1  think=0us(net)  burners=0  avg Run()=51.876 us  cpu=52.106 us  runs/s=19110
+threads=8 shared=1  think=0us(none)  burners=4  avg Run()=62.754 us  cpu=55.054 us  runs/s=124493
+threads=8 shared=1  think=0us(none)  burners=12  avg Run()=70.556 us  cpu=60.153 us  runs/s=109872
+threads=8 shared=1  think=0us(net)  burners=12  avg Run()=77.389 us  cpu=77.703 us  runs/s=13144

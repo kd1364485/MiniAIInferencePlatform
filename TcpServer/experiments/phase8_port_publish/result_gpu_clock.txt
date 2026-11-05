@@ -1,0 +1,4 @@
+round=2 bridge req/s: 65720 | avg ORT Run()=335.889 us | SM=771 MHz | P3:6 P5:14 
+round=2 host req/s: 43706.8 | avg ORT Run()=576.035 us | SM=437 MHz | P5:9 P8:11 
+round=3 bridge req/s: 63863.8 | avg ORT Run()=331.488 us | SM=769 MHz | P5:20 
+round=3 host req/s: 42030.2 | avg ORT Run()=614.992 us | SM=434 MHz | P5:8 P8:12 
