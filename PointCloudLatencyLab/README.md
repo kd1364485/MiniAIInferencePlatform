@@ -1,22 +1,95 @@
-# PointCloudLatencyLab(仮)
+# PointCloudLatencyLab
 
-LiDAR 風の点群を流す ROS 2(C++)の前処理パイプラインを作り、各段の遅延を測って説明する作品。計画は JobSerch の `ROS2小作品の計画.md`。
+LiDAR に似せた点群を流す、ROS 2(C++)の小さな前処理パイプライン。**各段の遅延と取りこぼしを自分で測れるようにし、「何が遅延を決めているか」を実験で確かめた**記録です。
+
+```
+sensor_sim ──▶ crop_box ──▶ voxel_downsample ──▶ ground_removal ──▶ cluster ──▶ 箱(MarkerArray)
+疑似 LiDAR      範囲の切り出し   間引き(CPU / CUDA)      地面除去(RANSAC)       クラスタリング
+3.4 万点 / 10 Hz
+```
+
+<!-- 録画したら: ![RViz2 で点群と箱が流れる様子](docs/demo.gif) -->
+
+## わかったこと(要約)
+
+すべて 1 台のノート PC(i7-12700H、RTX 3060 Laptop、WSL2)で、各条件 30 秒 × 3 回ほど。数字は目安です。
+
+| | 結果 | 詳しく |
+|---|---|---|
+| 1 | 別プロセスで 3.4 万点(約 550 KB)を渡すと、best_effort では **2〜3 割のフレームが黙って消える**。UDP の受信バッファ(上限 208 KB)があふれるため。平均の遅延だけ見ていると気づけない | [M2](#m220261105-段ごとの遅延と取りこぼし) |
+| 2 | RViz2 で表示すると遅くなる原因は、描画ではなく、受け取る相手が 2 つになって **Cyclone DDS がマルチキャストに切り替わる**こと。データのマルチキャストを止めると戻る | [M2](#m220261105-段ごとの遅延と取りこぼし) |
+| 3 | **1 プロセス + intra-process にすると、取りこぼし 0、受け渡し 4 回の合計 1.4 → 0.06 ms**(点の数を 2 倍にしてもほぼ同じ)。複数スレッドの executor は、一本道のパイプラインでは逆に遅い | [M3](#m320261105-1-プロセスにまとめるcomposable-node--intra-process) |
+| 4 | CPU に負荷をかけると、遅れるのは受け渡しではなく処理そのもの(p99 3 → 19〜23 ms)。**CPU を分ける(taskset)のが一番効く**(p99 5.3〜5.6 ms)。reliable は取りこぼし 0 の代わりに **p99 が約 100 ms** に跳ねる | [M4](#m420261105-cpu-の負荷優先度cpu-の割り当てqos) |
+| 5 | voxel の CUDA 版は、続けて呼ぶと 3.4 万点で 1.3〜1.8 倍、110 万点で約 5.6 倍速い。**しかし 10 Hz のパイプラインの中では CPU より遅い**。仕事の間隔が空くと GPU が休んだ状態(P8、約 215 MHz)のまま仕事をするため(100 ms ごとに呼ぶベンチマークで再現) | [M5](#m520261106-voxel-の-cuda-版) |
+
+**English summary:** A small ROS 2 (C++, Jazzy) point-cloud preprocessing pipeline (crop → voxel downsample → RANSAC ground removal → Euclidean clustering) with per-stage latency logging. Findings, all measured: across processes, ~550 KB clouds lose 20–30% of frames under best_effort because of UDP receive-buffer overflow; RViz2 slows the pipeline because Cyclone DDS switches to multicast for a second reader; composing into one process with intra-process comms removes the loss and cuts hop latency from 1.4 to 0.06 ms; under CPU load, CPU partitioning beats `nice` and a multi-threaded executor; reliable QoS trades loss for ~100 ms p99; a CUDA voxel filter that is 1.3–5.6× faster back-to-back is slower than the CPU at 10 Hz because the GPU stays in a low-power state between frames.
 
 ## 動かし方
 
 ```bash
-source env.sh                     # ROS 2 Jazzy + Cyclone DDS
+source env.sh                     # ROS 2 Jazzy + Cyclone DDS(+ WSL の GPU ドライバの場所)
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 source env.sh                     # ビルド後にもう一度(install/ を読み込む)
-ros2 launch pcl_pipeline pipeline.launch.py            # M1: 5 つのノード + RViz2
-ros2 launch pcl_pipeline pipeline.launch.py rviz:=false # 表示なし(測定のとき)
-ros2 launch pcl_pipeline composed.launch.py             # M3: 1 プロセス + intra-process(取りこぼしなし)
+ros2 launch pcl_pipeline composed.launch.py                 # おすすめ: 1 プロセス + intra-process
+ros2 launch pcl_pipeline pipeline.launch.py                 # 別プロセス + RViz2(rviz:=false で表示なし)
+ros2 launch pcl_pipeline composed.launch.py use_cuda:=true  # voxel を CUDA 版にする
+./install/pcl_pipeline/lib/pcl_pipeline/voxel_bench 0.2 50 [100]  # voxel の CPU / GPU 比較([] は呼ぶ間隔 ms)
+colcon test && colcon test-result --verbose                 # テスト
+```
+
+Docker(CPU 版。GitHub Actions も同じものを使う):
+
+```bash
+docker build -t pointcloud-latency-lab .   # ビルド + テスト(落ちたら失敗)
+docker run --rm pointcloud-latency-lab     # パイプラインを動かしてログを出す
+```
+
+launch の主な引数: `rings`(点の数)、`rate_hz`、`csv_dir`(1 フレーム 1 行の CSV を書く)、`qos_reliable`、`use_cuda`、`ipc` / `container`(composed のみ)、`sink` / `rviz`(pipeline のみ)。
+
+## テスト
+
+| テスト | 内容 |
+|---|---|
+| `test_filters`(gtest、7 件) | 切り出し・間引き(重心、負の座標の floor)・地面除去(平面の推定)・クラスタリング(分離、点の数の上限)・疑似 LiDAR |
+| `test_voxel_cuda`(gtest、2 件) | CUDA 版が CPU 版と同じ結果か(GPU がなければスキップ。CUDA なしのビルドでは作らない) |
+| `test_pipeline_launch.py`(launch_testing) | パイプライン全体を起動し、15 秒以内に箱が 20 フレーム届くこと、箱の数が 4〜14(車は 8 台)であること |
+
+CI(`.github/workflows/ci.yml`): push のたびに Docker の中でビルドとテスト、パイプラインを 15 秒動かしてログを確認。
+
+## フォルダ
+
+```
+src/pcl_pipeline/
+  include/pcl_pipeline/filters.hpp   点群の処理(ROS に依存しない)。node_util.hpp: 変換・QoS・測定。voxel_cuda.hpp
+  src/filters.cpp, voxel_cuda.cu     処理の本体(CPU / CUDA)
+  src/*_node.cpp                     ノード(部品として登録。単独の実行ファイルにもなる)
+  src/voxel_bench.cpp                voxel の CPU / GPU のベンチマーク
+  launch/                            pipeline.launch.py(別プロセス)、composed.launch.py(1 プロセス)
+  test/                              gtest、launch_testing
+src/m0_hello/                        M0 の環境確認用の最小の pub / sub
+tools/                               実験のスクリプト(run_m2〜m5)と、CSV の分析(analyze_latency.py、summarize_*.py)
+config/                              Fast DDS / Cyclone DDS の設定(M0・M2 の実験用)
+results/                             測定の生データ(CSV)とまとめ(*_summary.txt)
 ```
 
 ## 環境
 
-Windows 11 + WSL2(Ubuntu 24.04、`networkingMode=mirrored`)、ROS 2 Jazzy(apt の `ros-jazzy-desktop`)、RMW は Cyclone DDS。
+Windows 11 + WSL2(Ubuntu 24.04、`networkingMode=mirrored`)、ROS 2 Jazzy(apt の `ros-jazzy-desktop`)、RMW は Cyclone DDS。CPU は i7-12700H、GPU は RTX 3060 Laptop、CUDA は Ubuntu の `nvidia-cuda-toolkit` 12.0(ホストのコンパイラは gcc 12)。CUDA が見つからなければ CPU 版だけをビルドする。
 WSL2 は native の Ubuntu ではないので、遅延の揺れ(p99・最大)は WSL の影響を受ける。
+
+## まだ試していないこと
+
+- SCHED_FIFO(実時間の優先度)。この WSL では root の設定変更が要るため。
+- UDP の受信バッファを大きくする(`net.core.rmem_max`)。同じく PC の設定変更。
+- GPU のクロックを固定して、M5 の原因を確定させる(Windows の管理者権限が要る)。
+- native の Ubuntu での測定(WSL2 との違い)。
+- 既定の Fast DDS で、別プロセスのノードがつながらなかった原因(M0)。
+
+---
+
+# 記録(マイルストーンごと)
+
+各段階で「作る → 測る → 問題を見つける → 直す → 説明する」を、その日のうちに書いたものです。
 
 ## M0(2026/11/05): 環境の確認
 
@@ -209,3 +282,63 @@ RViz2 で表示しながら(同じ設定):
 - 大きい点群を別プロセスで渡すと、best_effort では 2〜3 割が落ち、reliable では落ちない代わりに 100 ms 単位で遅れる。どちらも、1 プロセス + intra-process にすれば起きない(取りこぼし 0、受け渡し 0.06 ms)。
 - そのうえで遅延の揺れを決めるのは CPU の取り合い。CPU を分けるのが一番効き、優先度(nice)も効く。スレッドを増やすのは逆効果だった。
 - まだ試していないこと: SCHED_FIFO(root の設定変更が要る)、受信バッファを大きくする(sysctl)、native の Ubuntu での測定。
+
+## M5(2026/11/06): voxel の CUDA 版
+
+### 作ったもの
+
+- `src/voxel_cuda.cu`(`VoxelCuda`): 1 点ごとにボクセルの鍵(CPU 版と同じ 21 bit × 3)を作る → CUB の基数ソートで鍵ごとに並べる → `ReduceByKey` で同じ鍵の区間を足す → 点の数で割って重心。GPU のメモリと CUB の作業領域は持ち続け、点が増えたときだけ確保し直す。転送の時間は CUDA のイベントで、送る・計算・戻すに分けて測る。
+- `voxel_bench`(ROS を使わない): 3,600〜110 万点で CPU 版と比べ、**結果が同じかも確かめる**(重心は自分のボクセルの中にあるので、ボクセルの番号で対応を取り、座標の差を見る。最大 7.9e-4 m(110 万点。GPU は float、CPU は double で足すため)、それ以外は 1e-5 m 以下)。
+- `voxel_downsample` ノードに `use_cuda`(launch の `use_cuda:=true`)。
+
+途中のつまずき:
+
+- 最初の結果の確認は「座標で並べ替えて比べる」だったので、34,200 点以上で「違う」と出た。点の数は同じで、x がほぼ同じ 2 点の順番が CPU と GPU の丸めの違いで入れ替わり、そこから後ろが全部ずれていた。比べ方の誤りで、計算は合っていた。
+- nvcc 12.0 は gcc 13 に対応していない → CMake で gcc 12 を指定。`-Wpedantic` を nvcc にも渡すと生成コードで大量の警告が出る → 警告は C++ だけに付ける。
+- WSL では `LD_LIBRARY_PATH=/usr/lib/wsl/lib` が要る(`env.sh` に追加。MiniAI と同じ問題)。
+
+### 結果 1: 続けて呼ぶと、約 1.6 万点から GPU が速い(`results/m5/voxel_bench_r1〜3.txt`、50 回の p50、3 回)
+
+| 点の数 | CPU | GPU(全体) | うち 送る / 計算 / 戻す | GPU は何倍速いか |
+|---|---|---|---|---|
+| 3,600 | 0.07 ms | 0.44〜0.51 ms | 0.03 / 0.22〜0.29 / 0.10 | 0.14〜0.16 倍 |
+| 16,304 | 0.43〜0.47 | 0.49〜0.56 | 0.03 / 0.26〜0.37 / 0.12 | 0.77〜0.96 倍 |
+| **34,200(このパイプライン)** | 0.95〜1.02 | 0.57〜0.73 | 0.05〜0.07 / 0.28〜0.46 / 0.14〜0.15 | **1.3〜1.8 倍** |
+| 138,680 | 3.5〜3.8 | 0.84〜0.93 | 0.24〜0.25 / 0.29〜0.35 / 0.21 | 4.0〜4.2 倍 |
+| 1,106,083 | 22.5〜24.7 | 4.1〜4.3 | 1.87〜1.89 / 1.41 / 0.52 | 5.5〜5.7 倍 |
+
+- 点が少ないと、GPU は呼び出しと待ちの固定のコスト(約 0.4 ms)で負ける。多いと、送る時間が一番大きくなる(110 万点で 4.3 ms のうち 1.9 ms。約 18 MB を 1.9 ms = 約 9 GB/s。普通のメモリからの転送)。
+- このとき GPU は P0(SM 1,600〜1,700 MHz)で動いていた。
+
+### 結果 2: パイプラインの中(10 Hz)では、GPU 版のほうが遅い(`results/m5_pipeline_summary.txt`、1 プロセス + intra-process、30 秒 × 3 回)
+
+| 点の数 | voxel の処理 p50 CPU / GPU | 端から端 p50 CPU / GPU | GPU の状態(GPU 版のとき) |
+|---|---|---|---|
+| 34,218 | 1.00〜1.10 / **2.53〜2.82 ms** | 1.89〜2.04 / 3.53〜3.72 ms | P8(約 215 MHz)85〜88%、P0 7〜11% |
+| 68,509 | 1.95〜2.13 / **3.51〜3.85 ms** | 3.42〜3.78 / 6.28〜6.41 ms | P8 85〜90%、P0 9〜12% |
+| 138,724 | 3.70〜4.54 / **5.89〜6.32 ms** | 6.23〜7.53 / 10.8〜11.1 ms | P8 87〜88%、P0 8〜11% |
+
+- ベンチマークでは 4 倍速かった大きさ(13.9 万点)でも、パイプラインの中では GPU 版が 1.4〜1.7 倍遅い。GPU 版の p99 も大きく揺れる(13.9 万点で 11〜26 ms)。
+
+### 原因を確かめた: 「100 ms ごとに 1 回」だと、GPU は休んだ状態のまま仕事をする
+
+`voxel_bench` に「1 回ごとに休む」オプション(第 3 引数、ms)を足し、パイプラインと同じ 100 ms 間隔で呼んだ(`results/m5/voxel_bench_interval{0,100}_r{1,2}.txt`、30 回の p50、2 回):
+
+| 点の数 | GPU 続けて(送る / 計算) | GPU 100 ms ごと(送る / 計算) | CPU 続けて / 100 ms ごと | 100 ms ごとの GPU は何倍速いか |
+|---|---|---|---|---|
+| 34,200 | 0.48〜0.52 ms(0.05 / 0.21〜0.22) | **3.08〜3.16 ms(0.34 / 1.38〜1.39)** | 0.99〜1.05 / 1.14〜1.38 ms | **0.37〜0.44 倍** |
+| 138,680 | 0.90〜0.96(0.19〜0.21 / 0.28〜0.30) | 6.28〜6.67(1.34 / 3.12〜3.14) | 3.6 / 4.2〜4.3 | 0.65〜0.67 倍 |
+| 1,106,083 | 4.5(2.0 / 1.34〜1.36) | 22.5〜43.9(5.5〜10.6 / 12.5〜27.8) | 21.9〜22.6 / 23.4〜24.2 | 0.55〜1.04 倍 |
+
+- 100 ms ごとに呼ぶと、GPU の計算は約 6 倍、送るのも約 6 倍遅くなる。SM のクロックの比(P8 の約 215 MHz と P0 の約 1,700 MHz、約 8 倍)に近い。GPU は仕事が来てからクロックを上げるが、1 回の仕事(数 ms)が終わるほうが早い、と考えている。送る時間まで遅くなるので、GPU のコアだけでなく、PCIe の速さやメモリのクロックも休んだ状態に落ちている可能性がある(未確認)。
+- パイプラインの中では、さらに遅い(34,218 点で 2.5〜2.8 ms)。ベンチマークより大きい差の分は、PointCloud2 との変換(memcpy)と、GPU 版の時に crop_box(CPU だけの段)まで約 2 倍遅くなっていること(13.9 万点で 0.83 → 1.87 ms)。後者の理由は未確認(GPU が動くとノート PC の電力の配分が変わる、など)。
+- **MiniAI の Phase 8 で見つけた「GPU が P8 に落ちて Run() が遅くなる」と同じ種類の問題。** 推論サーバーでは「host ネットワークのときだけ」だったが、ここでは「仕事の間隔が空くと」起きる。
+
+### 結論と、直すなら
+
+- **このパイプライン(10 Hz、1 フレーム 3.4 万点、voxel が CPU で約 1 ms)では、CPU 版のほうがよい。** GPU 版は、ベンチマークでは 1.3〜1.8 倍速いが、実際の使い方では 2.5 倍遅い。「単体で速い」と「システムの中で速い」は違った。
+- GPU が得になるのは、GPU が休む暇がないとき(点がずっと多い、センサーが何台もある、同じ GPU で推論も動いている、など)。
+- 試していない直し方:
+  - GPU のクロックを固定する(`nvidia-smi --lock-gpu-clocks`。Windows の管理者権限が要る PC の設定変更なので、本人の判断)。効けば、休んだ状態が原因だと確定できる。
+  - 合間に GPU を起こしておく(空の仕事を流し続ける)。電力を無駄に使う。
+  - 送る時間を減らす: pinned memory(ページロックされたメモリ)、crop_box も GPU で行い、点群を GPU に置いたまま次の段へ渡す。

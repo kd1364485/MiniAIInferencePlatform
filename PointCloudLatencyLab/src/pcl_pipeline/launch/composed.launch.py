@@ -25,10 +25,13 @@ def generate_launch_description():
         DeclareLaunchArgument('csv_dir', default_value=''),
         # true なら点群のトピックを reliable にする(既定は best_effort)
         DeclareLaunchArgument('qos_reliable', default_value='false'),
+        # true なら voxel_downsample を CUDA 版にする(M5)
+        DeclareLaunchArgument('use_cuda', default_value='false'),
     ]
     csv = {'csv_dir': ParameterValue(LaunchConfiguration('csv_dir'), value_type=str),
            'qos_reliable': ParameterValue(LaunchConfiguration('qos_reliable'), value_type=bool)}
     ipc = [{'use_intra_process_comms': ParameterValue(LaunchConfiguration('ipc'), value_type=bool)}]
+    voxel_params = {'use_cuda': ParameterValue(LaunchConfiguration('use_cuda'), value_type=bool)}
     sim_params = {
         'rings': ParameterValue(LaunchConfiguration('rings'), value_type=int),
         'azimuth_steps': ParameterValue(LaunchConfiguration('azimuth_steps'), value_type=int),
@@ -45,7 +48,7 @@ def generate_launch_description():
         composable_node_descriptions=[
             part('SensorSim', 'sensor_sim', sim_params),
             part('CropBox', 'crop_box'),
-            part('VoxelDownsample', 'voxel_downsample'),
+            part('VoxelDownsample', 'voxel_downsample', voxel_params),
             part('GroundRemoval', 'ground_removal'),
             part('ClusterNode', 'cluster'),
         ])

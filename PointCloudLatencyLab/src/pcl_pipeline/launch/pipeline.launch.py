@@ -23,12 +23,15 @@ def generate_launch_description():
         DeclareLaunchArgument('csv_dir', default_value=''),
         # true なら点群のトピックを reliable にする(既定は best_effort)
         DeclareLaunchArgument('qos_reliable', default_value='false'),
+        # true なら voxel_downsample を CUDA 版にする(M5)
+        DeclareLaunchArgument('use_cuda', default_value='false'),
         # 受け取るだけのノードを足す(RViz2 の「受け取る相手が増える」分だけを再現する)
         DeclareLaunchArgument('sink', default_value='false'),
         DeclareLaunchArgument('sink_topic', default_value='sensor/points'),
     ]
     csv = {'csv_dir': ParameterValue(LaunchConfiguration('csv_dir'), value_type=str),
            'qos_reliable': ParameterValue(LaunchConfiguration('qos_reliable'), value_type=bool)}
+    voxel_params = {'use_cuda': ParameterValue(LaunchConfiguration('use_cuda'), value_type=bool)}
     sim_params = {
         'rings': ParameterValue(LaunchConfiguration('rings'), value_type=int),
         'azimuth_steps': ParameterValue(LaunchConfiguration('azimuth_steps'), value_type=int),
@@ -43,7 +46,7 @@ def generate_launch_description():
     return LaunchDescription(args + [
         stage('sensor_sim', sim_params),
         stage('crop_box'),
-        stage('voxel_downsample'),
+        stage('voxel_downsample', voxel_params),
         stage('ground_removal'),
         stage('cluster'),
         Node(package='pcl_pipeline', executable='sink', name='sink', output='screen',
