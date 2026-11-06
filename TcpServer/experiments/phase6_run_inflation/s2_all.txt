@@ -1,0 +1,18 @@
+######## S2 round=1
+threads=1 shared=1  think=0us(none)  avg Run()=15.655 us  cpu=15.959 us  runs/s=61631
+threads=1 shared=1  think=100us(sleep)  avg Run()=21.455 us  cpu=21.889 us  runs/s=5119
+threads=1 shared=1  think=100us(spin)  avg Run()=16.242 us  cpu=16.598 us  runs/s=8487
+threads=8 shared=1  think=0us(none)  avg Run()=42.738 us  cpu=37.191 us  runs/s=182655
+threads=8 shared=1  think=100us(sleep)  avg Run()=25.262 us  cpu=25.544 us  runs/s=40526
+threads=8 shared=1  think=100us(spin)  avg Run()=30.59 us  cpu=30.154 us  runs/s=60445
+threads=8 shared=1  think=300us(sleep)  avg Run()=23.949 us  cpu=24.358 us  runs/s=20032
+threads=8 shared=1  think=300us(spin)  avg Run()=30.152 us  cpu=30.513 us  runs/s=24085
+######## S2 round=2
+threads=1 shared=1  think=0us(none)  avg Run()=14.884 us  cpu=15.174 us  runs/s=64797
+threads=1 shared=1  think=100us(sleep)  avg Run()=20.686 us  cpu=21.112 us  runs/s=5182
+threads=1 shared=1  think=100us(spin)  avg Run()=16.13 us  cpu=16.49 us  runs/s=8490
+threads=8 shared=1  think=0us(none)  avg Run()=43.754 us  cpu=38.194 us  runs/s=178458
+threads=8 shared=1  think=100us(sleep)  avg Run()=24.978 us  cpu=25.287 us  runs/s=40682
+threads=8 shared=1  think=100us(spin)  avg Run()=31.743 us  cpu=31.127 us  runs/s=59904
+threads=8 shared=1  think=300us(sleep)  avg Run()=23.565 us  cpu=23.964 us  runs/s=20052
+threads=8 shared=1  think=300us(spin)  avg Run()=29.03 us  cpu=29.4 us  runs/s=24174

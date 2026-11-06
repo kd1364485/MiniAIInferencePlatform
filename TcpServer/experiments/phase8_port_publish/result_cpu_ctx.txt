@@ -1,0 +1,3 @@
+# perf stat(ソフトウェアイベント)を bench に付けて測った回。サーバーの CPU と文脈切り替えは /proc から
+host:   req/s=42993.8  server cpu=12460ms ctx_switches=60685  bench task-clock=7551ms
+bridge: req/s=66849    server cpu=13470ms ctx_switches=35666  bench task-clock=6918ms

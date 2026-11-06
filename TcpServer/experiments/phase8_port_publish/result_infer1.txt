@@ -1,0 +1,4 @@
+round=i1_1 net=host cpu=shared | req/s: 44943.2 | avg ORT Run()=599.387 us  batches=10835  avg_batch=28.8895 | srv_ctx/req vol=0.154 invol=0.000 | NET_RX/req=0.73
+round=i1_1 net=bridge cpu=shared | req/s: 64162.4 | avg ORT Run()=335.667 us  batches=17399  avg_batch=26.3982 | srv_ctx/req vol=0.033 invol=0.002 | NET_RX/req=1.40
+round=i1_2 net=host cpu=shared | req/s: 43308.8 | avg ORT Run()=593.301 us  batches=10851  avg_batch=27.6234 | srv_ctx/req vol=0.144 invol=0.000 | NET_RX/req=0.65
+round=i1_2 net=bridge cpu=shared | req/s: 68014 | avg ORT Run()=338.764 us  batches=17537  avg_batch=26.6907 | srv_ctx/req vol=0.034 invol=0.002 | NET_RX/req=1.45

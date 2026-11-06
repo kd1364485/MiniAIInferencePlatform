@@ -1,0 +1,8 @@
+round=1 net=host cpu=shared | req/s: 41919.6 | avg ORT Run()=853.817 us  batches=15156  avg_batch=19.6189 | srv_ctx/req vol=0.200 invol=0.001 | NET_RX/req=0.66
+round=1 net=host cpu=split | req/s: 43557.4 | avg ORT Run()=883.151 us  batches=14701  avg_batch=20.7743 | srv_ctx/req vol=0.191 invol=0.001 | NET_RX/req=0.72
+round=1 net=bridge cpu=shared | req/s: 66937.2 | avg ORT Run()=486.35 us  batches=21352  avg_batch=22.2682 | srv_ctx/req vol=0.072 invol=0.001 | NET_RX/req=1.41
+round=1 net=bridge cpu=split | req/s: 67701.8 | avg ORT Run()=471.691 us  batches=21365  avg_batch=22.1949 | srv_ctx/req vol=0.074 invol=0.003 | NET_RX/req=1.43
+round=2 net=host cpu=shared | req/s: 43447.6 | avg ORT Run()=846.354 us  batches=15276  avg_batch=19.8902 | srv_ctx/req vol=0.197 invol=0.001 | NET_RX/req=0.68
+round=2 net=host cpu=split | req/s: 43066.6 | avg ORT Run()=875.78 us  batches=14810  avg_batch=20.5633 | srv_ctx/req vol=0.189 invol=0.001 | NET_RX/req=0.67
+round=2 net=bridge cpu=shared | req/s: 67405.2 | avg ORT Run()=485.134 us  batches=21146  avg_batch=22.4155 | srv_ctx/req vol=0.072 invol=0.002 | NET_RX/req=1.42
+round=2 net=bridge cpu=split | req/s: 65027.6 | avg ORT Run()=482.757 us  batches=20882  avg_batch=22.1549 | srv_ctx/req vol=0.072 invol=0.003 | NET_RX/req=1.41

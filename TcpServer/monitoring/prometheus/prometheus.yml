@@ -4,11 +4,20 @@ global:
   evaluation_interval: 15s     # アラートなどのルールを評価する間隔(今回はルール無し)
 
 scrape_configs:
-  # 推論サーバー自身のメトリクス(リクエスト数、レイテンシのヒストグラム、キューの深さ、エラー など)
-  # "infer-server" は docker compose のサービス名。同じネットワークの中では、名前で引ける(Docker の内蔵 DNS)
+  # 推論サーバー(ワーカー)のメトリクス。台数が増減するので、IP を書かず、DNS で「いまいる全台」を自動で見つける。
+  #   "worker" は docker compose のサービス名。複数台なら、全台の IP が引ける(Docker の内蔵 DNS)。
+  #   5 秒ごとに引き直すので、ワーカーが増減・再作成されても追従する。各台が instance="<IP>:9100" という別の系列になる
   - job_name: infer-server
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9100
+        refresh_interval: 5s
+
+  # ロードバランサ(自作の lb)のメトリクス: バックエンドごとの up、接続数、失敗数
+  - job_name: lb
     static_configs:
-      - targets: ["infer-server:9100"]
+      - targets: ["lb:9101"]
 
   # GPU の使用率・VRAM(monitoring/gpu_exporter.py)
   - job_name: gpu

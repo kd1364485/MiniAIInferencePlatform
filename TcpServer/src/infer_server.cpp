@@ -101,13 +101,68 @@ static void set_nonblocking(int fd) {
 
 using Clock = std::chrono::steady_clock;
 
+#ifdef INFER_PROFILE_RUN
+// ---- 調査用(-DINFER_PROFILE_RUN でビルドしたときだけ有効。通常のビルドでは何も入らない) ----
+// Run() が、サーバーの中でだけ遅い(ネットワークなしの run_bench より約 +70us)理由を切り分けるため、
+// Run() ごとに「前の Run() の終わりから何 us 空いたか」と「前と別の CPU で動いたか」を記録し、
+// 区分ごとに、壁時計の時間・そのスレッドが CPU を使った時間・コンテキストスイッチの回数を集める。
+//   壁時計 ≒ CPU 時間      → 待たされていない。計算そのものが遅い(キャッシュ・周波数など)
+//   壁時計 > CPU 時間      → CPU を取られて(または待って)いる
+#include <sched.h>
+#include <sys/resource.h>
+#include <time.h>
+#include <cstdio>
+struct ProfBucket {
+    std::atomic<uint64_t> n{0}, wall_ns{0}, cpu_ns{0}, vcsw{0}, ivcsw{0};
+};
+constexpr int kProfGaps = 4;                 // 前の Run() から: <20us / 20〜100us / 100us〜1ms / 1ms以上
+ProfBucket g_prof[kProfGaps * 2];            // × (同じ CPU / 別の CPU)
+static uint64_t prof_thread_cpu_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static int prof_gap_bucket(uint64_t gap_ns) {
+    return gap_ns < 20000 ? 0 : gap_ns < 100000 ? 1 : gap_ns < 1000000 ? 2 : 3;
+}
+static void prof_reset() {
+    for (auto& b : g_prof) { b.n = 0; b.wall_ns = 0; b.cpu_ns = 0; b.vcsw = 0; b.ivcsw = 0; }
+}
+static void prof_print() {
+    static const char* gaps[kProfGaps] = {"<20us", "20-100us", "100us-1ms", ">=1ms"};
+    std::cout << "[profile] Run() を、前の Run() からの間隔 × CPU が替わったか、で分けた平均\n"
+              << "  間隔        CPU     回数      壁時計(us)  CPU時間(us)  自発的切替/回  非自発的切替/回\n";
+    for (int g = 0; g < kProfGaps; ++g) {
+        for (int m = 0; m < 2; ++m) {
+            const ProfBucket& b = g_prof[g * 2 + m];
+            uint64_t n = b.n.load();
+            if (n == 0) continue;
+            char line[200];
+            std::snprintf(line, sizeof(line), "  %-10s  %-6s  %-8llu  %10.1f  %11.1f  %13.3f  %15.3f\n",
+                          gaps[g], m ? "別" : "同じ", (unsigned long long)n,
+                          b.wall_ns.load() / (double)n / 1000.0, b.cpu_ns.load() / (double)n / 1000.0,
+                          b.vcsw.load() / (double)n, b.ivcsw.load() / (double)n);
+            std::cout << line;
+        }
+    }
+    std::cout << std::flush;
+}
+#endif
+
 // サーバー全体の統計。ワーカー間共有なので atomic(1命令の加算だけ守れば足りる)
 // mutex を使わない理由: 「+= する」という1操作だけの保護なので、CPUの不可分命令(atomic)で足り、
 // ロック待ちでワーカーが止まるコストを避けられる(Phase 2 の Q2 と同じ使い分け)。
 std::atomic<uint64_t> g_requests{0};
 std::atomic<uint64_t> g_infer_ns{0};   // ORT Run() にかかった時間の合計
 std::atomic<uint64_t> g_batches{0};    // Run() を呼んだ回数(バッチ数)
-std::atomic<bool>     g_stop{false};   // SIGINT/SIGTERM で true になる「止めて」フラグ
+std::atomic<bool>     g_stop{false};   // SIGINT で true になる「いますぐ止めて」フラグ(Ctrl+C。接続は待たない)
+
+// ---- graceful shutdown(SIGTERM): 3 段階で止める ----
+//   段階1 g_draining: /healthz を 503 にする。受け付けと処理は続ける(Pod の削除が kube-proxy に伝わるまでの猶予)
+//   段階2 g_closing : listen を閉じ、ワーカーに「処理中が終わった接続から閉じて」と伝える
+//   段階3           : 接続が 0 になる(または時間切れ)のを待ってから終了する
+std::atomic<bool>     g_draining{false};   // SIGTERM で true(シグナルハンドラでできるのは、これを立てるところまで)
+std::atomic<bool>     g_closing{false};    // 段階2に入ったら true(メインスレッドだけが立てる)
 
 // ---- キュー版の統計 ----
 std::atomic<uint64_t> g_qwait_ns{0};      // キューで待った時間の合計(push → pop)
@@ -231,10 +286,33 @@ static void forward_batch(Ort::Session& session, const uint8_t* const* px, size_
     int64_t shape[4] = {(int64_t)b, 1, 28, 28};
     Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), shape, 4);
 
+#ifdef INFER_PROFILE_RUN
+    thread_local Clock::time_point prof_last_end{};
+    thread_local int prof_last_cpu = -1;
+    const int prof_cpu = sched_getcpu();
+    rusage prof_ru0{}, prof_ru1{};
+    getrusage(RUSAGE_THREAD, &prof_ru0);
+    const uint64_t prof_c0 = prof_thread_cpu_ns();
+#endif
     // --- 推論本体。Run() だけを steady_clock で挟んで測る ---
     auto t0 = Clock::now();
     auto outs = session.Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 1);
     auto t1 = Clock::now();
+#ifdef INFER_PROFILE_RUN
+    const uint64_t prof_c1 = prof_thread_cpu_ns();
+    getrusage(RUSAGE_THREAD, &prof_ru1);
+    if (prof_last_cpu >= 0) {   // 2回目以降だけ記録する(1回目は「前の Run()」がない)
+        const uint64_t gap = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t0 - prof_last_end).count();
+        ProfBucket& pb = g_prof[prof_gap_bucket(gap) * 2 + (prof_cpu != prof_last_cpu ? 1 : 0)];
+        ++pb.n;
+        pb.wall_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        pb.cpu_ns += prof_c1 - prof_c0;
+        pb.vcsw += (uint64_t)(prof_ru1.ru_nvcsw - prof_ru0.ru_nvcsw);
+        pb.ivcsw += (uint64_t)(prof_ru1.ru_nivcsw - prof_ru0.ru_nivcsw);
+    }
+    prof_last_end = t1;
+    prof_last_cpu = prof_cpu;
+#endif
     g_infer_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     g_requests += b;
     ++g_batches;
@@ -314,6 +392,7 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
     std::vector<int> fails;
     std::vector<Request> outbox;      // キュー版: この回で共有キューへ積む Request
     std::vector<Response> got;        // キュー版: 推論 worker から受け取った返信
+    std::vector<int> idle;            // 終了準備中: 閉じる待機中の接続(ループ中に conns を壊さないため、先に集める)
     while (!g_stop) {
         ready.clear();
         outbox.clear();
@@ -458,6 +537,22 @@ static void worker_loop(Worker& w, Ort::Session& session, size_t max_batch,
                 run_batch(session, conns, ready.data() + off, b, fails);
             }
             for (int fd : fails) close_conn(w, conns, fd);   // 失敗した接続は最後にまとめて閉じる
+        }
+
+        // ---- 終了準備中(段階2以降): 処理が終わった(待機中の)接続を閉じる ----
+        // 毎回の最後に行うので、「返信を送り終えた直後の接続」も、次の周回でここで閉じられる(返事をしてから閉じる)。
+        // 待機中 = 受信が 0 バイト(filled==0)で、推論待ちでもない。受信の途中・推論待ちの接続は閉じない。
+        if (g_closing) {
+            idle.clear();
+            for (auto& [fd, c] : conns) {
+                if (c.filled != 0 || c.in_flight) continue;
+                // 次のリクエストがもうカーネルに届いていたら、閉じない(閉じると、読まれていないデータがあるので
+                // FIN でなく RST になり、そのリクエストが失われる)。次の周回で読んで、返事をしてから閉じる
+                char peek;
+                if (recv(fd, &peek, 1, MSG_PEEK | MSG_DONTWAIT) > 0) continue;
+                idle.push_back(fd);
+            }
+            for (int fd : idle) close_conn(w, conns, fd);
         }
     }
 }
@@ -662,10 +757,10 @@ static int server_main(int argc, char** argv) {
     // ===== シグナル =====
     // 相手が切れたソケットに send すると既定では SIGPIPE でプロセスごと死ぬ → 無視にする
     signal(SIGPIPE, SIG_IGN);
-    // Ctrl+C(SIGINT) / kill(SIGTERM) では g_stop を立てるだけ。
+    // Ctrl+C(SIGINT) は g_stop(いますぐ止める)、kill / docker stop / Pod の削除(SIGTERM) は g_draining(待ってから止める)。
     // ハンドラ内でできることは極めて限られるため、「フラグを立てる→メインループが気づいて後片付け」にする
     signal(SIGINT,  [](int) { g_stop = true; });
-    signal(SIGTERM, [](int) { g_stop = true; });
+    signal(SIGTERM, [](int) { g_draining = true; });
 
     // ===== ONNX Runtime: セッションは1個を全ワーカーで共有 =====
     // Env = ONNX Runtime のグローバルな実行環境(ログ設定など)。Session より長生きさせる必要がある
@@ -695,6 +790,9 @@ static int server_main(int argc, char** argv) {
             if (max_batch == 1) break;   // 1回だけで足りる
         }
         g_requests = 0; g_infer_ns = 0; g_batches = 0;   // ウォームアップ分の統計は捨てる
+#ifdef INFER_PROFILE_RUN
+        prof_reset();
+#endif
     }
 
     // per_worker=1 のときだけ使う、worker 専用の Session 群(共有時は空のまま)
@@ -715,7 +813,10 @@ static int server_main(int argc, char** argv) {
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(8080);         // htons = ホスト→ネットワークのバイト順変換
+    // 推論のポート。環境変数 INFER_PORT(既定 8080)。同じマシンで複数台を動かすテスト(ロードバランサ)のため
+    int infer_port = 8080;
+    if (const char* e = std::getenv("INFER_PORT")) infer_port = std::atoi(e);
+    addr.sin_port = htons(infer_port);   // htons = ホスト→ネットワークのバイト順変換
     addr.sin_addr.s_addr = INADDR_ANY;   // 全ネットワークインターフェースで待ち受け
     if (bind(listen_fd, (sockaddr*)&addr, sizeof(addr)) < 0) die("bind");
     // 第2引数 = 「accept される前の接続待ち行列」の長さ。100接続が一斉に来ても溢れないよう大きめに
@@ -754,7 +855,8 @@ static int server_main(int argc, char** argv) {
     g_metrics_on = metrics_port > 0;
     if (g_metrics_on) {
         BuildInfo bi{provider, std::filesystem::path(model_path).filename().string(), kWorkers, infer_threads, max_batch};
-        threads.emplace_back(metrics::serve, metrics_port, [bi] { return render_metrics(bi); }, std::cref(g_stop));
+        threads.emplace_back(metrics::serve, metrics_port, [bi] { return render_metrics(bi); }, std::cref(g_stop),
+                             [] { return !g_draining.load(); });   // 終了準備中は /healthz が 503(readiness が外れる)
     }
 
     // ===== メイン = acceptor(listen_fd だけを epoll で監視) =====
@@ -765,7 +867,7 @@ static int server_main(int argc, char** argv) {
     epoll_ctl(ep, EPOLL_CTL_ADD, listen_fd, &ev);
 
     // endl = 改行 + flush。起動完了をすぐ表示させる
-    std::cout << "infer_server: port 8080, model=" << model_path
+    std::cout << "infer_server: port " << infer_port << ", model=" << model_path
               << ", workers=" << kWorkers << ", intra_op_threads=" << intra
               << ", session=" << (per_worker ? "per-worker" : "shared")
               << ", max_batch=" << max_batch
@@ -773,11 +875,54 @@ static int server_main(int argc, char** argv) {
               << ", infer_threads=" << infer_threads << (use_queue ? " (queue)" : " (inline)")
               << ", metrics=" << (g_metrics_on ? ":" + std::to_string(metrics_port) : std::string("off")) << std::endl;
 
+    // graceful shutdown の時間(ミリ秒)。k8s では INFER_DRAIN_DELAY_MS=3000 INFER_DRAIN_MAX_MS=10000 を指定する。
+    //   delay: SIGTERM のあと、受け付けを続ける時間(Pod の削除が kube-proxy に伝わるまでの猶予。k8s 以外では 0 でよい)
+    //   max  : そのあと、処理中の接続の完了を待つ上限(超えたら強制終了。docker stop の既定 10 秒に収まるよう、既定は 5 秒)
+    int drain_delay_ms = 0, drain_max_ms = 5000;
+    if (const char* e = std::getenv("INFER_DRAIN_DELAY_MS")) drain_delay_ms = std::atoi(e);
+    if (const char* e = std::getenv("INFER_DRAIN_MAX_MS"))   drain_max_ms   = std::atoi(e);
+    bool drain_started = false;
+    Clock::time_point t_drain, t_close;
+
     int next = 0;   // ラウンドロビン用: 次に渡すワーカーの番号
     while (!g_stop) {
+        // ---- graceful shutdown の進行(SIGTERM を受けたとき) ----
+        if (g_draining) {
+            auto now = Clock::now();
+            if (!drain_started) {                       // 段階1: 受け付けは続けたまま、/healthz が 503 になる
+                drain_started = true;
+                t_drain = now;
+                std::cout << "draining: SIGTERM received, conns=" << g_conns_active.load()
+                          << ", keep accepting for " << drain_delay_ms << " ms" << std::endl;
+            }
+            if (!g_closing && now - t_drain >= std::chrono::milliseconds(drain_delay_ms)) {
+                // 段階2: listen を閉じる(以降の新規接続は、このポッドには来ない)→ ワーカーを起こして、閉じ始めさせる。
+                // g_closing は、ワーカーを起こす(event_fd に書く)より前に立てる。逆だと、起こされたワーカーが
+                // まだ false の旗を見て、掃除せずに眠り直し、次のデータが来るまで旗に気づけない(書いてから通知する)
+                epoll_ctl(ep, EPOLL_CTL_DEL, listen_fd, nullptr);
+                close(listen_fd);
+                t_close = now;
+                g_closing = true;
+                for (auto& w : workers) {
+                    uint64_t one = 1;
+                    if (write(w->event_fd, &one, sizeof(one)) < 0) {}
+                }
+                std::cout << "closing: listen closed, conns=" << g_conns_active.load() << std::endl;
+            }
+            if (g_closing) {
+                // 段階3: 接続が 0 になれば終了。drain_max_ms を過ぎたら、残っていても強制終了
+                bool timeout = now - t_close >= std::chrono::milliseconds(drain_max_ms);
+                if (g_conns_active.load() <= 0 || timeout) {
+                    std::cout << (timeout ? "drain timeout" : "drained") << ": remaining conns=" << g_conns_active.load()
+                              << ", took " << std::chrono::duration<double>(now - t_drain).count() << " s" << std::endl;
+                    break;
+                }
+            }
+        }
         epoll_event e;
-        // M7は -1(無期限)だったが、止められなくなるので500msごとに起きて g_stop を確認する
-        int n = epoll_wait(ep, &e, 1, 500);
+        // M7は -1(無期限)だったが、止められなくなるので500msごとに起きて g_stop を確認する。
+        // 終了準備中は、段階の切り替えと接続数の確認を細かくするため 50ms にする
+        int n = epoll_wait(ep, &e, 1, g_draining ? 50 : 500);
         if (n <= 0) continue;
         // listen_fd が読める = 新着接続あり。EAGAIN(cfd<0)になるまで全部 accept
         while (true) {
@@ -804,6 +949,9 @@ static int server_main(int argc, char** argv) {
               << (nb ? g_infer_ns.load() / nb / 1000.0 : 0.0) << " us"
               << "  batches=" << nb << "  avg_batch=" << (nb ? (double)n / nb : 0.0)
               << "  Run()/request=" << (n ? g_infer_ns.load() / n / 1000.0 : 0.0) << " us" << std::endl;
+#ifdef INFER_PROFILE_RUN
+    prof_print();
+#endif
     if (use_queue) {
         // キュー待ち時間 = push → pop。p50 の内訳(I/O・キュー待ち・Run())を分けて語るための数字
         std::cout << "queue: avg_wait=" << (n ? g_qwait_ns.load() / n / 1000.0 : 0.0) << " us"
