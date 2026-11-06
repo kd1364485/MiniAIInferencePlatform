@@ -22,3 +22,6 @@ TcpServer/ort-cache/*.tgz
 
 # docker compose の環境変数(Grafana のパスワードなど)。.env.example を写して作る。コミットしない
 TcpServer/.env
+
+# ROS 2 の小作品は、別のリポジトリ(PointCloudLatencyLab)にする。このリポジトリには入れない
+/PointCloudLatencyLab/
