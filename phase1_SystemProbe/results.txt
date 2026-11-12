@@ -1,0 +1,118 @@
+# SystemProbe ベンチマークの生の出力 (2026-11-02、./bench 2000 を 3 回、Release)
+# 数値は実行ごとにぶれる(PC の負荷による)。手順と解釈は README の「テストと性能測定」を参照。
+
+env: 12th Gen Intel(R) Core(TM) i7-12700H, 20 logical CPUs, kernel 6.6.87.2-microsoft-standard-WSL2, g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+################ run 1
+SystemProbe benchmark  (iterations per case: 2000)
+
+[1] /proc を実際に開いて読む(open/read/close + parse)
+  meminfo_kb(MemAvailable)           mean       4.9  p50       4.6  p95       5.1  p99       9.1  max      167.2  (µs)
+  cpu_model_name                     mean      18.2  p50      17.9  p95      19.1  p99      33.5  max      315.6  (µs)
+  logical_cpus (cpuinfo)             mean     161.3  p50     154.3  p95     210.3  p99     290.5  max      560.7  (µs)
+  logical_cpus_online (sysconf)      mean       2.5  p50       2.2  p95       2.9  p99       9.1  max       60.5  (µs)
+  read_cpu_times                     mean       9.2  p50       8.7  p95       9.9  p99      20.0  max      147.8  (µs)
+  read_netdev                        mean      14.4  p50      12.7  p95      19.3  p99      37.0  max      292.9  (µs)
+  read_diskstats                     mean      44.4  p50      43.0  p95      53.3  p99      73.9  max      348.8  (µs)
+
+[2] 同じ内容をメモリ上の文字列から解釈するだけ(parse のみ)
+  parse_meminfo_kb(MemAvailable)     mean       0.6  p50       0.6  p95       0.6  p99       0.6  max        1.2  (µs)
+  parse_cpu_model                    mean       0.7  p50       0.7  p95       1.0  p99       1.3  max       32.1  (µs)
+  parse_logical_cpus                 mean       7.9  p50       7.7  p95       8.4  p99       8.9  max       82.8  (µs)
+  parse_cpu_times                    mean       0.5  p50       0.5  p95       0.5  p99       0.5  max       11.3  (µs)
+  parse_netdev                       mean       4.9  p50       4.9  p95       5.1  p99       5.3  max       18.5  (µs)
+  parse_diskstats                    mean       9.8  p50       9.3  p95      10.3  p99      12.5  max      135.5  (µs)
+
+[3] 全プロセスのスレッド数を数える 2 方式の比較
+  対象プロセス数: 46
+  by_task  (task/ を数える)      mean     145.5  p50     137.3  p95     159.7  p99     195.6  max      321.3  (µs)
+  by_status(Threads: 行を読む)   mean     253.6  p50     237.9  p95     273.5  p99     454.0  max      586.4  (µs)
+  (1 回 = 全プロセスを 1 周。反復 50 回。上の µs は 1 周あたり)
+
+[4] 1 周の収集(メモリ・CPU・全プロセス・ネットワーク・ディスク。500ms の待ちは除く)
+  collect_all                        mean    1154.4  p50    1125.7  p95    1333.5  p99    1475.7  max     1547.8  (µs)
+
+[5] 1 回あたりの CPU 時間の内訳(getrusage の user と sys)
+  logical_cpus (cpuinfo)             user     12.7  sys    136.3  (sys   91%)  (µs/回)
+  logical_cpus_online (sysconf)      user      0.0  sys      2.1  (sys   98%)  (µs/回)
+  parse_logical_cpus (メモリ上)  user      7.3  sys      0.2  (sys    3%)  (µs/回)
+
+[6] 素のシステムコールだけで、全プロセスを 1 周(C++ のストリームなし)
+  合計スレッド数(確認): raw status=122  raw task=122  C++ status=122  C++ task=122
+  raw task   (open+getdents64+close) mean      78.6  p50      76.3  p95      80.6  p99      94.8  max      172.0  (µs)
+  raw status (open+read+close)       mean     194.1  p50     181.2  p95     216.4  p99     285.1  max      440.8  (µs)
+################ run 2
+SystemProbe benchmark  (iterations per case: 2000)
+
+[1] /proc を実際に開いて読む(open/read/close + parse)
+  meminfo_kb(MemAvailable)           mean       4.2  p50       4.0  p95       4.5  p99       7.1  max       88.7  (µs)
+  cpu_model_name                     mean      17.2  p50      16.5  p95      18.7  p99      29.4  max      173.9  (µs)
+  logical_cpus (cpuinfo)             mean     159.7  p50     156.8  p95     186.0  p99     267.7  max      512.4  (µs)
+  logical_cpus_online (sysconf)      mean       2.3  p50       2.0  p95       3.0  p99       4.4  max       73.9  (µs)
+  read_cpu_times                     mean       8.7  p50       8.2  p95       9.5  p99      16.0  max      266.6  (µs)
+  read_netdev                        mean      14.4  p50      13.2  p95      16.7  p99      26.5  max      253.3  (µs)
+  read_diskstats                     mean      41.0  p50      39.6  p95      46.2  p99      80.0  max      375.8  (µs)
+
+[2] 同じ内容をメモリ上の文字列から解釈するだけ(parse のみ)
+  parse_meminfo_kb(MemAvailable)     mean       0.6  p50       0.6  p95       0.6  p99       0.6  max       12.9  (µs)
+  parse_cpu_model                    mean       0.7  p50       0.6  p95       0.7  p99       0.7  max       33.8  (µs)
+  parse_logical_cpus                 mean       7.9  p50       7.2  p95      10.2  p99      20.4  max      218.5  (µs)
+  parse_cpu_times                    mean       0.5  p50       0.5  p95       0.5  p99       0.5  max        8.3  (µs)
+  parse_netdev                       mean       5.4  p50       5.1  p95       5.6  p99       7.6  max      182.4  (µs)
+  parse_diskstats                    mean       9.5  p50       9.1  p95       9.9  p99      11.3  max      256.4  (µs)
+
+[3] 全プロセスのスレッド数を数える 2 方式の比較
+  対象プロセス数: 46
+  by_task  (task/ を数える)      mean     179.8  p50     148.3  p95     313.0  p99     458.9  max      464.0  (µs)
+  by_status(Threads: 行を読む)   mean     253.4  p50     246.1  p95     262.8  p99     300.6  max      671.7  (µs)
+  (1 回 = 全プロセスを 1 周。反復 50 回。上の µs は 1 周あたり)
+
+[4] 1 周の収集(メモリ・CPU・全プロセス・ネットワーク・ディスク。500ms の待ちは除く)
+  collect_all                        mean    1083.9  p50    1020.8  p95    1339.8  p99    1488.3  max     2067.0  (µs)
+
+[5] 1 回あたりの CPU 時間の内訳(getrusage の user と sys)
+  logical_cpus (cpuinfo)             user      7.5  sys    139.1  (sys   95%)  (µs/回)
+  logical_cpus_online (sysconf)      user      0.0  sys      2.1  (sys  100%)  (µs/回)
+  parse_logical_cpus (メモリ上)  user      7.0  sys      0.1  (sys    1%)  (µs/回)
+
+[6] 素のシステムコールだけで、全プロセスを 1 周(C++ のストリームなし)
+  合計スレッド数(確認): raw status=122  raw task=122  C++ status=122  C++ task=122
+  raw task   (open+getdents64+close) mean      89.6  p50      82.5  p95      92.3  p99     103.7  max      369.4  (µs)
+  raw status (open+read+close)       mean     204.8  p50     198.2  p95     211.9  p99     276.6  max      376.3  (µs)
+################ run 3
+SystemProbe benchmark  (iterations per case: 2000)
+
+[1] /proc を実際に開いて読む(open/read/close + parse)
+  meminfo_kb(MemAvailable)           mean       4.5  p50       4.3  p95       5.2  p99       7.3  max       45.9  (µs)
+  cpu_model_name                     mean      17.5  p50      16.8  p95      18.1  p99      24.8  max      243.4  (µs)
+  logical_cpus (cpuinfo)             mean     156.5  p50     153.9  p95     171.2  p99     260.0  max      677.1  (µs)
+  logical_cpus_online (sysconf)      mean       3.4  p50       2.0  p95       2.8  p99       4.0  max     1421.2  (µs)
+  read_cpu_times                     mean       9.0  p50       8.6  p95       9.7  p99      14.5  max      150.1  (µs)
+  read_netdev                        mean      15.1  p50      13.6  p95      18.6  p99      48.8  max      292.5  (µs)
+  read_diskstats                     mean      40.0  p50      37.6  p95      48.2  p99      78.1  max      296.0  (µs)
+
+[2] 同じ内容をメモリ上の文字列から解釈するだけ(parse のみ)
+  parse_meminfo_kb(MemAvailable)     mean       0.8  p50       0.6  p95       0.7  p99       1.7  max      146.0  (µs)
+  parse_cpu_model                    mean       0.7  p50       0.7  p95       0.7  p99       0.7  max       20.4  (µs)
+  parse_logical_cpus                 mean       7.4  p50       7.1  p95       8.4  p99      12.9  max      126.2  (µs)
+  parse_cpu_times                    mean       0.5  p50       0.5  p95       0.5  p99       0.5  max       21.7  (µs)
+  parse_netdev                       mean       4.7  p50       4.7  p95       5.1  p99       5.3  max       32.7  (µs)
+  parse_diskstats                    mean      10.4  p50      10.1  p95      10.5  p99      18.2  max      217.6  (µs)
+
+[3] 全プロセスのスレッド数を数える 2 方式の比較
+  対象プロセス数: 46
+  by_task  (task/ を数える)      mean     160.4  p50     150.1  p95     196.7  p99     221.4  max      274.8  (µs)
+  by_status(Threads: 行を読む)   mean     243.9  p50     224.9  p95     326.3  p99     396.3  max      496.9  (µs)
+  (1 回 = 全プロセスを 1 周。反復 50 回。上の µs は 1 周あたり)
+
+[4] 1 周の収集(メモリ・CPU・全プロセス・ネットワーク・ディスク。500ms の待ちは除く)
+  collect_all                        mean    1097.2  p50    1061.9  p95    1333.1  p99    1397.8  max     1498.3  (µs)
+
+[5] 1 回あたりの CPU 時間の内訳(getrusage の user と sys)
+  logical_cpus (cpuinfo)             user      9.3  sys    133.1  (sys   93%)  (µs/回)
+  logical_cpus_online (sysconf)      user      0.1  sys      2.0  (sys   98%)  (µs/回)
+  parse_logical_cpus (メモリ上)  user      7.2  sys      0.0  (sys    0%)  (µs/回)
+
+[6] 素のシステムコールだけで、全プロセスを 1 周(C++ のストリームなし)
+  合計スレッド数(確認): raw status=122  raw task=122  C++ status=122  C++ task=122
+  raw task   (open+getdents64+close) mean      86.0  p50      82.9  p95     100.6  p99     107.7  max      140.5  (µs)
+  raw status (open+read+close)       mean     210.2  p50     198.0  p95     219.5  p99     423.1  max      472.7  (µs)

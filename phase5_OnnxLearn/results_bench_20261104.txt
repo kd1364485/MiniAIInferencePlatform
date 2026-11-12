@@ -1,0 +1,19 @@
+﻿実際の provider: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+## round=1 BATCH=1
+CPUExecutionProvider            p50=   232.1us  p95=   480.8us  p99=   680.5us  max=   819.8us  infer/s=  3752.4
+CUDAExecutionProvider           p50=   191.4us  p95=   282.3us  p99=   537.7us  max=  1300.1us  infer/s=  4704.9
+## round=1 BATCH=256
+CPUExecutionProvider            p50= 10993.3us  p95= 11631.0us  p99= 11953.9us  max= 12781.6us  infer/s=    92.1
+CUDAExecutionProvider           p50=   765.2us  p95=   957.0us  p99=  1387.2us  max=  1586.7us  infer/s=  1253.0
+## round=2 BATCH=1
+CPUExecutionProvider            p50=   207.7us  p95=   412.7us  p99=   547.3us  max=   718.4us  infer/s=  4266.2
+CUDAExecutionProvider           p50=   243.7us  p95=   490.3us  p99=   868.9us  max=  1861.3us  infer/s=  3513.6
+## round=2 BATCH=256
+CPUExecutionProvider            p50= 10960.9us  p95= 11753.4us  p99= 12365.3us  max= 12610.0us  infer/s=    92.8
+CUDAExecutionProvider           p50=   788.7us  p95=  1051.7us  p99=  1370.2us  max=  1489.1us  infer/s=  1223.7
+## round=3 BATCH=1
+CPUExecutionProvider            p50=   270.0us  p95=   478.6us  p99=   570.4us  max=   744.2us  infer/s=  3370.3
+CUDAExecutionProvider           p50=   170.4us  p95=   224.1us  p99=   513.5us  max=   559.9us  infer/s=  5408.2
+## round=3 BATCH=256
+CPUExecutionProvider            p50= 11018.1us  p95= 11734.0us  p99= 13099.2us  max= 15510.5us  infer/s=    91.1
+CUDAExecutionProvider           p50=   777.6us  p95=   963.2us  p99=  1403.5us  max=  1648.7us  infer/s=  1246.6

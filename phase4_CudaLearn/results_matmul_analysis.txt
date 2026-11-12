@@ -1,0 +1,126 @@
+#### N=1024 run=1
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=1024  (FLOP = 2.15 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)          2.761      2.702        795     1.00x     2.49e-07
+tiled16 (shared, 16x16)             1.996      1.942       1106     1.39x     2.49e-07
+tiled32 (shared, 32x32)             2.154      1.993       1078     1.36x     2.49e-07
+regtile (1 スレッド = 4x4 出力)      0.498      0.424       5066     6.37x     2.49e-07
+cuBLAS Sgemm (FP32 のみ)          0.316      0.303       7085     8.92x     0.00e+00
+cuBLAS Sgemm (既定の設定)      0.325      0.306       7021     8.84x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 6.1% / tiled16 8.5% / regtile 38.8% / cuBLAS 54.2%)
+#### N=1024 run=2
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=1024  (FLOP = 2.15 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)          2.707      2.350        914     1.00x     2.49e-07
+tiled16 (shared, 16x16)             2.010      1.927       1114     1.22x     2.49e-07
+tiled32 (shared, 32x32)             2.131      1.991       1079     1.18x     2.49e-07
+regtile (1 スレッド = 4x4 出力)      0.510      0.493       4360     4.77x     2.49e-07
+cuBLAS Sgemm (FP32 のみ)          0.336      0.302       7109     7.78x     0.00e+00
+cuBLAS Sgemm (既定の設定)      0.322      0.310       6921     7.57x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 7.0% / tiled16 8.5% / regtile 33.4% / cuBLAS 54.4%)
+#### N=1024 run=3
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=1024  (FLOP = 2.15 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)          2.690      2.349        914     1.00x     2.49e-07
+tiled16 (shared, 16x16)             2.008      1.934       1110     1.21x     2.49e-07
+tiled32 (shared, 32x32)             2.170      1.991       1079     1.18x     2.49e-07
+regtile (1 スレッド = 4x4 出力)      0.489      0.464       4630     5.06x     2.49e-07
+cuBLAS Sgemm (FP32 のみ)          0.369      0.344       6242     6.83x     0.00e+00
+cuBLAS Sgemm (既定の設定)      0.316      0.301       7133     7.80x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 7.0% / tiled16 8.5% / regtile 35.4% / cuBLAS 47.7%)
+#### N=2048 run=1
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=2048  (FLOP = 17.18 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)         22.185     21.972        782     1.00x     0.00e+00
+tiled16 (shared, 16x16)            16.491     16.083       1068     1.37x     0.00e+00
+tiled32 (shared, 32x32)            16.842     16.754       1025     1.31x     0.00e+00
+regtile (1 スレッド = 4x4 出力)      3.598      3.269       5256     6.72x     0.00e+00
+cuBLAS Sgemm (FP32 のみ)          2.466      2.303       7460     9.54x     0.00e+00
+cuBLAS Sgemm (既定の設定)      2.440      2.298       7476     9.56x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 6.0% / tiled16 8.2% / regtile 40.2% / cuBLAS 57.1%)
+#### N=2048 run=2
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=2048  (FLOP = 17.18 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)         22.192     21.970        782     1.00x     0.00e+00
+tiled16 (shared, 16x16)            16.558     16.118       1066     1.36x     0.00e+00
+tiled32 (shared, 32x32)            16.839     16.739       1026     1.31x     0.00e+00
+regtile (1 スレッド = 4x4 出力)      3.506      3.144       5465     6.99x     0.00e+00
+cuBLAS Sgemm (FP32 のみ)          2.441      2.283       7524     9.62x     0.00e+00
+cuBLAS Sgemm (既定の設定)      2.497      2.326       7388     9.45x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 6.0% / tiled16 8.2% / regtile 41.8% / cuBLAS 57.6%)
+#### N=2048 run=3
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=2048  (FLOP = 17.18 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)         22.238     21.977        782     1.00x     0.00e+00
+tiled16 (shared, 16x16)            16.542     15.845       1084     1.39x     0.00e+00
+tiled32 (shared, 32x32)            16.846     16.740       1026     1.31x     0.00e+00
+regtile (1 スレッド = 4x4 出力)      3.582      3.297       5210     6.67x     0.00e+00
+cuBLAS Sgemm (FP32 のみ)          2.461      2.282       7527     9.63x     0.00e+00
+cuBLAS Sgemm (既定の設定)      2.477      2.322       7398     9.46x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 6.0% / tiled16 8.3% / regtile 39.9% / cuBLAS 57.6%)
+#### N=4096 run=1
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=4096  (FLOP = 137.44 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)        181.062    179.040        768     1.00x     6.87e-06
+tiled16 (shared, 16x16)           132.913    130.863       1050     1.37x     6.87e-06
+tiled32 (shared, 32x32)           136.124    135.062       1018     1.33x     6.87e-06
+regtile (1 スレッド = 4x4 出力)     28.768     28.532       4817     6.28x     6.87e-06
+cuBLAS Sgemm (FP32 のみ)         20.702     20.206       6802     8.86x     0.00e+00
+cuBLAS Sgemm (既定の設定)     20.998     20.725       6632     8.64x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 5.9% / tiled16 8.0% / regtile 36.9% / cuBLAS 52.0%)
+#### N=4096 run=2
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=4096  (FLOP = 137.44 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)        182.281    179.883        764     1.00x     6.87e-06
+tiled16 (shared, 16x16)           133.618    131.634       1044     1.37x     6.87e-06
+tiled32 (shared, 32x32)           136.104    135.261       1016     1.33x     6.87e-06
+regtile (1 スレッド = 4x4 出力)     29.783     29.219       4704     6.16x     6.87e-06
+cuBLAS Sgemm (FP32 のみ)         20.652     20.417       6731     8.81x     0.00e+00
+cuBLAS Sgemm (既定の設定)     20.698     20.552       6687     8.75x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 5.8% / tiled16 8.0% / regtile 36.0% / cuBLAS 51.5%)
+#### N=4096 run=3
+GPU: NVIDIA GeForce RTX 3060 Laptop GPU, SM=30, 最大クロック=1702 MHz, FP32 理論ピーク(最大クロック)=13.1 TFLOPS
+N=4096  (FLOP = 137.44 G)
+
+カーネル                    平均 ms  最小 ms     GFLOPS  対naive 最大相対誤差
+naive (16x16 スレッド)        183.315    181.344        758     1.00x     6.87e-06
+tiled16 (shared, 16x16)           134.143    132.289       1039     1.37x     6.87e-06
+tiled32 (shared, 32x32)           136.776    136.300       1008     1.33x     6.87e-06
+regtile (1 スレッド = 4x4 出力)     29.619     29.420       4672     6.16x     6.87e-06
+cuBLAS Sgemm (FP32 のみ)         20.693     20.415       6732     8.88x     0.00e+00
+cuBLAS Sgemm (既定の設定)     20.574     20.391       6740     8.89x     0.00e+00   ← 参考: 既定(TF32 が使われる可能性)
+
+(GFLOPS は最小時間から。理論ピークの何 % かは、実行中の SM クロックで変わる。
+ 最大クロックでのピーク 13071 GFLOPS に対して: naive 5.8% / tiled16 7.9% / regtile 35.7% / cuBLAS 51.5%)

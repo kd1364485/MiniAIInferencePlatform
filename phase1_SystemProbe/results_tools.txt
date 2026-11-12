@@ -1,0 +1,137 @@
+# strace / perf / gdb の生の出力 (2026-11-02、WSL2、Release ビルド)
+# perf: /usr/lib/linux-tools/6.8.0-147-generic/perf を直接実行(WSL2 のカーネルに合う版がないため)。
+#       ハードウェアカウンタは <not supported>。perf_event_paranoid=2 のためカーネル側のサンプルは取れない。
+# strace: 1 回ごとに約 10µs の監視コストが乗るので、時間ではなく『回数』を見る。
+
+################ A. strace -c: systemprobe 全体(500ms の待ちを含む)
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 12.12    0.002424          11       204           close
+ 37.32    0.007467          36       204           openat
+ 18.00    0.003601          21       168           read
+  4.99    0.000998          10        96           fcntl
+ 23.45    0.004691          48        96           getdents64
+  2.82    0.000565          10        54           fstat
+  0.00    0.000000           0        22           mmap
+  0.00    0.000000           0         6           mprotect
+  0.19    0.000038           7         5           brk
+  0.83    0.000166          41         4           newfstatat
+  0.00    0.000000           0         2           pread64
+  0.05    0.000011          11         1           write
+
+################ B. モード別: 1 回あたりのシステムコール数 (strace -c の total / N)
+meminfo  N=200  total_calls=662       per_iteration=3.3
+cpuinfo  N=100  total_calls=1362      per_iteration=13.6
+sysconf  N=200  total_calls=662       per_iteration=3.3
+task     N=50   total_calls=16523     per_iteration=330.5  (processes=47, per_process=7.03)
+status   N=50   total_calls=7120      per_iteration=142.4  (processes=47, per_process=3.03)
+
+################ C. 各モードの上位システムコール(回数順)
+--- cpuinfo
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 91.68    0.023767          21      1104           read
+  3.98    0.001033           9       105           close
+  4.34    0.001125          10       105           openat
+  0.00    0.000000           0        22           mmap
+  0.00    0.000000           0         6           mprotect
+  0.00    0.000000           0         5           fstat
+  0.00    0.000000           0         3           brk
+--- sysconf
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 30.34    0.002115          10       205           close
+ 38.53    0.002686          13       205           openat
+ 31.13    0.002170          10       204           read
+  0.00    0.000000           0        22           mmap
+  0.00    0.000000           0         6           mprotect
+  0.00    0.000000           0         5           fstat
+  0.00    0.000000           0         3           brk
+--- task
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 26.06    0.045758           9      4702           fcntl
+ 29.08    0.051054          10      4702           getdents64
+ 13.66    0.023990          10      2356           close
+ 13.55    0.023800          10      2356           fstat
+ 17.46    0.030661          13      2356           openat
+  0.02    0.000037           1        22           mmap
+  0.04    0.000077          12         6           mprotect
+--- status
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 28.25    0.022817           9      2356           close
+ 32.95    0.026615          11      2356           openat
+ 38.21    0.030858          13      2354           read
+  0.15    0.000120           5        22           mmap
+  0.03    0.000027           4         6           fstat
+  0.09    0.000071          11         6           mprotect
+  0.03    0.000022           7         3           brk
+
+
+################ D. cpuinfo を 1 回読むときの read の中身 (strace -T、open と read のみ)
+openat(AT_FDCWD, "/proc/cpuinfo", O_RDONLY) = 3 <0.000050>
+read(3, "processor\t: 0\nvendor_id\t: Genuin"..., 8191) = 2768 <0.000062>
+read(3, "processor\t: 2\nvendor_id\t: Genuin"..., 8191) = 2768 <0.000048>
+read(3, "processor\t: 4\nvendor_id\t: Genuin"..., 8191) = 2768 <0.000047>
+read(3, "processor\t: 6\nvendor_id\t: Genuin"..., 8191) = 2768 <0.000055>
+read(3, "processor\t: 8\nvendor_id\t: Genuin"..., 8191) = 2768 <0.000054>
+read(3, "processor\t: 10\nvendor_id\t: Genui"..., 8191) = 2774 <0.000062>
+read(3, "processor\t: 12\nvendor_id\t: Genui"..., 8191) = 2774 <0.000048>
+read(3, "processor\t: 14\nvendor_id\t: Genui"..., 8191) = 2774 <0.000047>
+read(3, "processor\t: 16\nvendor_id\t: Genui"..., 8191) = 2774 <0.000048>
+read(3, "processor\t: 18\nvendor_id\t: Genui"..., 8191) = 2774 <0.000041>
+read(3, "", 8191)                       = 0 <0.000034>
+close(3)                                = 0 <0.000036>
++++ exited with 0 +++
+
+################ E. sysconf(_SC_NPROCESSORS_ONLN) が実際に開くファイル
+openat(AT_FDCWD, "/sys/devices/system/cpu/online", O_RDONLY|O_CLOEXEC) = 3
+
+################ F. perf stat (ソフトウェアイベント。:u = ユーザー空間のみ)
+--- meminfo N=2000
+              8.74 msec task-clock:u                     #    0.878 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+               124      page-faults:u                    #   14.190 K/sec                     
+       0.009952165 seconds time elapsed
+--- cpuinfo N=2000
+            289.05 msec task-clock:u                     #    0.908 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+               125      page-faults:u                    #  432.449 /sec                      
+       0.318220061 seconds time elapsed
+--- sysconf N=2000
+              4.86 msec task-clock:u                     #    0.871 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+               126      page-faults:u                    #   25.935 K/sec                     
+       0.005576035 seconds time elapsed
+--- task N=100
+             16.30 msec task-clock:u                     #    0.890 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+               133      page-faults:u                    #    8.159 K/sec                     
+       0.018320079 seconds time elapsed
+--- status N=100
+             24.31 msec task-clock:u                     #    0.893 CPUs utilized             
+                 0      context-switches:u               #    0.000 /sec                      
+               131      page-faults:u                    #    5.388 K/sec                     
+       0.027219481 seconds time elapsed
+
+################ G. gdb: parse_netdev_line を Debug ビルドで追う
+(debug build OK)
+Breakpoint 1 at 0x872c: file /tmp/sp/src/parse.h, line 142.
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+Breakpoint 1, probe::parse_netdev_line (line="    lo:   27943     214    0    0    0     0          0         0    27943     214    0    0    0     0       0          0", out=...) at /tmp/sp/src/parse.h:142
+142	inline bool parse_netdev_line(const std::string& line, NetDev& out) {
+#0  probe::parse_netdev_line (line="    lo:   27943     214    0    0    0     0          0         0    27943     214    0    0    0     0       0          0", out=...) at /tmp/sp/src/parse.h:142
+#1  0x000055555555cb7a in probe::parse_netdev (in=...) at /tmp/sp/src/parse.h:166
+#2  0x000055555555dc38 in probe::read_netdev () at /tmp/sp/src/collect.h:91
+#3  0x00005555555591ed in main () at /tmp/sp/src/main.cpp:87
+$1 = "    lo:   27943     214    0    0    0     0          0         0    27943     214    0    0    0     0       0          0"
+143	    size_t colon = line.find(':');
+144	    if (colon == std::string::npos) return false;
+145	    std::string name = line.substr(0, colon);
+146	    size_t first = name.find_first_not_of(" \t");
+$2 = 6
+$3 = "    lo"
+0x000055555555cb7a in probe::parse_netdev (in=...) at /tmp/sp/src/parse.h:166
+166	        if (parse_netdev_line(line, d)) devs.push_back(d);
+Value returned is $4 = true

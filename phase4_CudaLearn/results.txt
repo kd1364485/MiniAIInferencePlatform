@@ -1,0 +1,295 @@
+# CudaLearn 測定の生出力 (2026-11-02, RTX 3060 Laptop, nvcc 12.0, -O2 -arch=native, 各3回)
+BUILD_OK
+### vecadd_bench run1
+n = 16777216 (67.1 MB x3)
+CPU        :    26.45 ms
+GPU kernel :     3.14 ms
+GPU memcpy :    30.97 ms  (H2D 22.74 + D2H 8.22)
+GPU total  :    34.11 ms
+errors=0
+### vecadd_bench run2
+n = 16777216 (67.1 MB x3)
+CPU        :    25.13 ms
+GPU kernel :     2.33 ms
+GPU memcpy :    28.93 ms  (H2D 20.98 + D2H 7.95)
+GPU total  :    31.26 ms
+errors=0
+### vecadd_bench run3
+n = 16777216 (67.1 MB x3)
+CPU        :    23.09 ms
+GPU kernel :     3.10 ms
+GPU memcpy :    29.73 ms  (H2D 20.12 + D2H 9.61)
+GPU total  :    32.83 ms
+errors=0
+### vecheavy_k1 run1
+n = 16777216, K = 1
+CPU        :     142.14 ms
+GPU kernel :       3.56 ms
+GPU memcpy :      72.19 ms  (H2D 24.37 + D2H 47.82)
+GPU total  :      75.75 ms
+speedup(kernel only): x39.9
+speedup(total)      : x1.9
+errors=0
+### vecheavy_k1 run2
+n = 16777216, K = 1
+CPU        :     142.14 ms
+GPU kernel :       3.11 ms
+GPU memcpy :      49.99 ms  (H2D 21.37 + D2H 28.63)
+GPU total  :      53.10 ms
+speedup(kernel only): x45.7
+speedup(total)      : x2.7
+errors=0
+### vecheavy_k1 run3
+n = 16777216, K = 1
+CPU        :     141.21 ms
+GPU kernel :       3.95 ms
+GPU memcpy :      55.19 ms  (H2D 25.22 + D2H 29.97)
+GPU total  :      59.14 ms
+speedup(kernel only): x35.8
+speedup(total)      : x2.4
+errors=0
+### vecheavy_k200 run1
+n = 16777216, K = 200
+CPU        :   56429.99 ms
+GPU kernel :      34.33 ms
+GPU memcpy :      76.82 ms  (H2D 29.24 + D2H 47.58)
+GPU total  :     111.15 ms
+speedup(kernel only): x1643.8
+speedup(total)      : x507.7
+errors=14871156
+### vecheavy_k200 run2
+n = 16777216, K = 200
+CPU        :   55466.17 ms
+GPU kernel :      37.38 ms
+GPU memcpy :      67.38 ms  (H2D 21.90 + D2H 45.48)
+GPU total  :     104.76 ms
+speedup(kernel only): x1483.9
+speedup(total)      : x529.5
+errors=14871156
+### vecheavy_k200 run3
+n = 16777216, K = 200
+CPU        :   58335.77 ms
+GPU kernel :      33.73 ms
+GPU memcpy :      74.89 ms  (H2D 21.66 + D2H 53.24)
+GPU total  :     108.62 ms
+speedup(kernel only): x1729.4
+speedup(total)      : x537.0
+errors=14871156
+### matmul_bench run1
+n = 512 (512x512)
+CPU        :     117.66 ms
+GPU kernel :       1.35 ms
+speedup    : x87.0
+errors=0
+### matmul_bench run2
+n = 512 (512x512)
+CPU        :     122.05 ms
+GPU kernel :       1.49 ms
+speedup    : x81.9
+errors=0
+### matmul_bench run3
+n = 512 (512x512)
+CPU        :     134.66 ms
+GPU kernel :       1.71 ms
+speedup    : x78.8
+errors=0
+### mt512 run1
+n = 512, TILE = 16
+CPU          :   136.87 ms
+GPU naive    :     0.44 ms
+GPU tiled    :     0.36 ms
+naive->tiled : x1.21
+errors=0
+### mt512 run2
+n = 512, TILE = 16
+CPU          :   161.70 ms
+GPU naive    :     0.43 ms
+GPU tiled    :     0.37 ms
+naive->tiled : x1.17
+errors=0
+### mt512 run3
+n = 512, TILE = 16
+CPU          :   101.16 ms
+GPU naive    :     0.42 ms
+GPU tiled    :     0.42 ms
+naive->tiled : x1.00
+errors=0
+### mt1024 run1
+n = 1024, TILE = 16
+CPU          :  2704.79 ms
+GPU naive    :     3.09 ms
+GPU tiled    :     2.32 ms
+naive->tiled : x1.33
+errors=0
+### mt1024 run2
+n = 1024, TILE = 16
+CPU          :  3032.31 ms
+GPU naive    :     3.08 ms
+GPU tiled    :     3.61 ms
+naive->tiled : x0.85
+errors=0
+### mt1024 run3
+n = 1024, TILE = 16
+CPU          :  3170.06 ms
+GPU naive    :     3.79 ms
+GPU tiled    :     2.48 ms
+naive->tiled : x1.53
+errors=0
+### mt2048 run1
+n = 2048, TILE = 16
+CPU          : 37532.58 ms
+GPU naive    :    23.81 ms
+GPU tiled    :    20.00 ms
+naive->tiled : x1.19
+errors=0
+### mt2048 run2
+n = 2048, TILE = 16
+CPU          : 38328.48 ms
+GPU naive    :    26.02 ms
+GPU tiled    :    20.99 ms
+naive->tiled : x1.24
+errors=0
+### mt2048 run3
+n = 2048, TILE = 16
+CPU          : 39451.40 ms
+GPU naive    :    23.78 ms
+GPU tiled    :    19.44 ms
+naive->tiled : x1.22
+errors=0
+
+### 追加: vecheavy_bench の errors と K の関係 (1回ずつ)
+K=5  : CPU 1301.38 ms / GPU kernel 4.79 ms / errors=12053848
+K=20 : CPU 6736.06 ms / GPU kernel 5.43 ms / errors=16128114
+K=50 : CPU 15404.78 ms / GPU kernel 12.38 ms / errors=15909915
+
+### 追加: 検証失敗の切り分け (diag_precision.cu, n=2^20, nvcc -O2 -arch=native -std=c++17 --extended-lambda)
+n=1048576  (y range 1.0 .. 11.5)
+   K | CPUfloat vs double           | GPUfloat vs double           | CPUfloat vs GPUfloat        
+     |   maxabs      med    >1e-4 |   maxabs      med    >1e-4 |   maxabs      med    >1e-4
+   1 |  1.3e-06  8.3e-08     0.0% |  1.2e-06  7.7e-08     0.0% |  1.9e-06  0.0e+00     0.0%
+   2 |  1.4e-05  2.7e-07     0.0% |  1.3e-05  2.5e-07     0.0% |  2.2e-05  1.2e-07     0.0%
+   3 |  1.4e-04  7.6e-07     0.0% |  1.3e-04  6.9e-07     0.0% |  2.3e-04  2.4e-07     0.1%
+   5 |  1.5e-02  5.4e-06    19.4% |  1.3e-02  4.9e-06    18.8% |  2.5e-02  1.3e-06    14.5%
+  10 |  2.3e+01  4.0e-04    56.0% |  2.3e+01  3.6e-04    55.6% |  2.3e+01  7.0e-05    48.4%
+  20 |  2.3e+01  1.9e-01    64.2% |  2.3e+01  1.8e-01    64.1% |  2.3e+01  6.9e-02    62.2%
+ 200 |  2.3e+01  2.1e-01    55.6% |  2.3e+01  2.1e-01    55.5% |  2.3e+01  2.0e-01    55.4%
+
+K=5: CPU float vs GPU float の差を y の範囲別に(中央値)
+  y=   1.0..   2.3  median diff = 0.00e+00
+  y=   2.3..   3.6  median diff = 2.38e-07
+  y=   3.6..   4.9  median diff = 9.54e-07
+  y=   4.9..   6.2  median diff = 2.44e-06
+  y=   6.2..   7.6  median diff = 8.11e-06
+  y=   7.6..   8.9  median diff = 6.68e-06
+  y=   8.9..  10.2  median diff = 2.43e-05
+  y=  10.2..  11.5  median diff = 2.57e-05
+
+### 追加: 式を直した版 vecheavy_stable.cu (x = sinf(x)*0.5f + cosf(y)), 各K 3回
+### K=1 run1
+n = 16777216, K = 1
+CPU        :     152.78 ms
+GPU kernel :       3.33 ms
+GPU memcpy :      88.62 ms  (H2D 19.98 + D2H 68.64)
+GPU total  :      91.95 ms
+speedup(kernel only): x45.9
+speedup(total)      : x1.7
+errors=0
+### K=1 run2
+n = 16777216, K = 1
+CPU        :     138.70 ms
+GPU kernel :       3.53 ms
+GPU memcpy :      49.69 ms  (H2D 21.32 + D2H 28.37)
+GPU total  :      53.22 ms
+speedup(kernel only): x39.3
+speedup(total)      : x2.6
+errors=0
+### K=1 run3
+n = 16777216, K = 1
+CPU        :     153.89 ms
+GPU kernel :       4.54 ms
+GPU memcpy :      53.74 ms  (H2D 23.59 + D2H 30.15)
+GPU total  :      58.28 ms
+speedup(kernel only): x33.9
+speedup(total)      : x2.6
+errors=0
+### K=5 run1
+n = 16777216, K = 5
+CPU        :     641.17 ms
+GPU kernel :       3.53 ms
+GPU memcpy :      83.79 ms  (H2D 22.57 + D2H 61.22)
+GPU total  :      87.32 ms
+speedup(kernel only): x181.7
+speedup(total)      : x7.3
+errors=0
+### K=5 run2
+n = 16777216, K = 5
+CPU        :     644.52 ms
+GPU kernel :       3.73 ms
+GPU memcpy :      53.44 ms  (H2D 23.05 + D2H 30.39)
+GPU total  :      57.17 ms
+speedup(kernel only): x172.7
+speedup(total)      : x11.3
+errors=0
+### K=5 run3
+n = 16777216, K = 5
+CPU        :     611.91 ms
+GPU kernel :       4.81 ms
+GPU memcpy :      83.10 ms  (H2D 21.78 + D2H 61.32)
+GPU total  :      87.91 ms
+speedup(kernel only): x127.1
+speedup(total)      : x7.0
+errors=0
+### K=20 run1
+n = 16777216, K = 20
+CPU        :    3938.28 ms
+GPU kernel :       6.67 ms
+GPU memcpy :      73.14 ms  (H2D 20.45 + D2H 52.69)
+GPU total  :      79.81 ms
+speedup(kernel only): x590.2
+speedup(total)      : x49.3
+errors=0
+### K=20 run2
+n = 16777216, K = 20
+CPU        :    3886.63 ms
+GPU kernel :       6.65 ms
+GPU memcpy :     110.56 ms  (H2D 25.25 + D2H 85.31)
+GPU total  :     117.21 ms
+speedup(kernel only): x584.0
+speedup(total)      : x33.2
+errors=0
+### K=20 run3
+n = 16777216, K = 20
+CPU        :    4157.84 ms
+GPU kernel :       6.13 ms
+GPU memcpy :      75.86 ms  (H2D 20.40 + D2H 55.46)
+GPU total  :      81.99 ms
+speedup(kernel only): x678.1
+speedup(total)      : x50.7
+errors=0
+### K=200 run1
+n = 16777216, K = 200
+CPU        :   46551.94 ms
+GPU kernel :      34.68 ms
+GPU memcpy :      79.53 ms  (H2D 27.55 + D2H 51.97)
+GPU total  :     114.21 ms
+speedup(kernel only): x1342.1
+speedup(total)      : x407.6
+errors=0
+### K=200 run2
+n = 16777216, K = 200
+CPU        :   44703.44 ms
+GPU kernel :      32.59 ms
+GPU memcpy :      66.68 ms  (H2D 20.38 + D2H 46.29)
+GPU total  :      99.26 ms
+speedup(kernel only): x1371.8
+speedup(total)      : x450.3
+errors=0
+### K=200 run3
+n = 16777216, K = 200
+CPU        :   44823.27 ms
+GPU kernel :      33.68 ms
+GPU memcpy :      74.18 ms  (H2D 22.89 + D2H 51.29)
+GPU total  :     107.86 ms
+speedup(kernel only): x1330.7
+speedup(total)      : x415.6
+errors=0
